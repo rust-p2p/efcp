@@ -1,5 +1,7 @@
 //! Data Transfer Protocol
-use crate::packet::{Packet, SequenceNumber};
+use crate::constants::{Instant, SequenceNumber};
+use crate::dtcp::Dtcp;
+use crate::packet::Packet;
 use failure::Fail;
 use std::collections::VecDeque;
 
@@ -15,8 +17,6 @@ pub enum SendError {
     #[fail(display = "max closed window queue length exceeded")]
     MaxClosedWindowQueue,
 }
-
-struct Timer;
 
 /// State of the flow
 pub enum FlowState {
@@ -40,7 +40,7 @@ pub struct Dtp {
     /// State of the flow.
     state: FlowState,
     /// DTCP enabled.
-    dtcp_present: bool,
+    dtcp: Option<Dtcp>,
     /// Window based flow control enabled.
     window_flow_control: bool,
     /// Rate based flow control enabled.
@@ -62,8 +62,6 @@ pub struct Dtp {
     partial_delivery: bool,
     /// Indicates if SDUs with missing fragments can be delivered.
     incomplete_delivery: bool,
-    /// Queue of sent packets that have not yet been acknowledged.
-    retransmission_queue: VecDeque<(Packet, Timer)>,
     /// Queue of PDUs ready to be sent once the window opens.
     closed_window_queue: VecDeque<Packet>,
     /// Largest sequence number that we acknowledged.
@@ -86,11 +84,11 @@ impl Dtp {
         let mut packet = Packet::dtp(payload);
         // sequence number
         packet.set_sequence_number(self.sequence_number);
-        self.sequence_number = self.sequence_number.wrapping_add(1);
+        self.sequence_number += 1;
 
-        if self.dtcp_present {
-            // TODO set data run flag
-            // packet.set_drf(dtcp.take_drf());
+        if let Some(mut dtcp) = self.dtcp {
+            // set data run flag
+            packet.set_drf(dtcp.take_drf());
 
             if self.window_flow_control {
                 self.closed_window = packet.sequence_number() <= self.right_window_edge;
@@ -104,8 +102,7 @@ impl Dtp {
                 // TODO update sending rate measurement
                 // self.pdus_sent += 1;
                 if self.retransmission_present {
-                    // TODO real timer
-                    self.retransmission_queue.push_back((packet, Timer));
+                    dtcp.register_retransmission(&packet);
                 }
                 // TODO send packet
             }
@@ -116,9 +113,6 @@ impl Dtp {
         // start sender inactivity timer
 
         // notify the caller about error conditions.
-        if self.sequence_number > self.sequence_number_roll_over_threshold {
-            return Err(SendError::SequenceNumberRollover);
-        }
         if self.closed_window_queue.len() > self.max_closed_window_queue_len {
             return Err(SendError::MaxClosedWindowQueue);
         }

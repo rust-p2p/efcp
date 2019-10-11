@@ -19,6 +19,7 @@
 //! | Length              | Length              |
 //! +---------------------+---------------------+
 //! ```
+use crate::constants::SequenceNumber;
 use byteorder::{BigEndian, ByteOrder};
 use bytes::{BufMut, BytesMut};
 use std::io::{Error, ErrorKind, Result};
@@ -50,8 +51,6 @@ pub enum Type {
     Control = 1,
 }
 
-pub type SequenceNumber = u64;
-
 /// Length of the IP header.
 const IP_HEADER_LEN: usize = 20;
 /// Length of the UDP header.
@@ -68,6 +67,8 @@ const DEFAULT: [u8; 12] = [
     1, 0, 0, 0, // Default sequence number
     0, 0, 0, 0, 0, 0, 0, 0,
 ];
+
+const DRF_MASK: u8 = 0b1000_0000;
 
 impl Packet {
     /// Parse a packet.
@@ -146,8 +147,17 @@ impl Packet {
     }
 
     /// Data run flag.
-    pub fn data_run(&self) -> bool {
-        self.data[2] & 0b1000_0000 > 0
+    pub fn drf(&self) -> bool {
+        self.data[2] & DRF_MASK > 0
+    }
+
+    /// Set data run flag.
+    pub fn set_drf(&mut self, drf: bool) {
+        if drf {
+            self.data[2] |= DRF_MASK;
+        } else {
+            self.data[2] &= !DRF_MASK;
+        }
     }
 
     /// Explicit congestion notification.
@@ -187,7 +197,7 @@ impl std::fmt::Debug for Packet {
         fmt.debug_struct("Packet")
             .field("version", &self.version())
             .field("type", &self.ty())
-            .field("data run", &self.data_run())
+            .field("drf", &self.drf())
             .field("ecn", &self.ecn())
             .field("flow control information present", &self.fci())
             .field("ack/nack information present", &self.acki())
