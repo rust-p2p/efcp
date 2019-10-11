@@ -1,5 +1,5 @@
 //! Data Transfer Protocol
-use crate::constants::{Instant, SequenceNumber};
+use crate::constants::SequenceNumber;
 use crate::dtcp::Dtcp;
 use crate::packet::Packet;
 use failure::Fail;
@@ -34,46 +34,30 @@ pub struct Dtp {
     max_flow_sdu_size: u64,
     /// Maximum PDU size for this connection.
     max_flow_pdu_size: u64,
-    /// The sequence number at which a new flow needs to be established
-    /// to prevent sequence number rollover.
-    sequence_number_roll_over_threshold: SequenceNumber,
     /// State of the flow.
     state: FlowState,
-    /// DTCP enabled.
+    /// DTCP handler.
     dtcp: Option<Dtcp>,
-    /// Window based flow control enabled.
-    window_flow_control: bool,
-    /// Rate based flow control enabled.
-    rate_flow_control: bool,
-    /// Retransmission enabled.
-    retransmission_present: bool,
     /// Indicates if the flow control window is closed.
     closed_window: bool,
     /// Indicates that with rate based flow control all the PDUs that can be
     /// sent during this time period have been sent.
     rate_fulfilled: bool,
-    /// Number of PDUs queued to send because the flow control window is
-    /// closed.
-    closed_window_length: i64,
     /// Maximum number of PDUs queued to send because the flow control window
     /// is closed.
-    max_closed_window_queue_len: i64,
+    max_closed_window_queue_len: usize,
     /// Indicates if the SDUs can be delivered incrementally.
     partial_delivery: bool,
     /// Indicates if SDUs with missing fragments can be delivered.
     incomplete_delivery: bool,
     /// Queue of PDUs ready to be sent once the window opens.
     closed_window_queue: VecDeque<Packet>,
-    /// Largest sequence number that we acknowledged.
-    received_left_window_edge: SequenceNumber,
     /// Largest sequence number received.
     max_sequence_number_received: SequenceNumber,
-    /// Largest sequence number that has been acknowledged.
-    sender_left_window_edge: SequenceNumber,
     /// Next sequence number.
     sequence_number: SequenceNumber,
     /// Queue of PDUs requiring reassembly.
-    pdu_reassembly_queue: VecDeque<(Packet, SequenceNumber)>,
+    reassembly_queue: VecDeque<(Packet, SequenceNumber)>,
 }
 
 impl Dtp {
@@ -86,25 +70,14 @@ impl Dtp {
         packet.set_sequence_number(self.sequence_number);
         self.sequence_number += 1;
 
-        if let Some(mut dtcp) = self.dtcp {
+        if let Some(dtcp) = self.dtcp.as_mut() {
             // set data run flag
             packet.set_drf(dtcp.take_drf());
-
-            if self.window_flow_control {
-                self.closed_window = packet.sequence_number() <= self.right_window_edge;
-            }
-            if self.rate_flow_control {
-                self.rate_fulfilled = self.pdus_sent < self.sending_rate;
-            }
-            if self.closed_window || self.rate_fulfilled {
-                self.closed_window_queue.push_back(packet);
-            } else {
-                // TODO update sending rate measurement
-                // self.pdus_sent += 1;
-                if self.retransmission_present {
-                    dtcp.register_retransmission(&packet);
-                }
+            if dtcp.window_open(packet.sequence_number()) {
+                dtcp.register_packet(&packet)
                 // TODO send packet
+            } else {
+                self.closed_window_queue.push_back(packet);
             }
         } else {
             // TODO send packet
