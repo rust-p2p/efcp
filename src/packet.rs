@@ -22,7 +22,7 @@
 use crate::constants::SequenceNumber;
 use byteorder::{BigEndian, ByteOrder};
 use bytes::{BufMut, BytesMut};
-use std::io::{Error, ErrorKind, Result};
+use failure::Fail;
 
 /// Packet header
 ///
@@ -70,17 +70,28 @@ const DEFAULT: [u8; 12] = [
 
 const DRF_MASK: u8 = 0b1000_0000;
 
+/// Packet error.
+#[derive(Debug, Fail)]
+pub enum PacketError {
+    /// Packet has an invalid version.
+    #[fail(display = "invalid packet version")]
+    InvalidVersion,
+    /// Packet has an invalid type.
+    #[fail(display = "invalid packet type")]
+    InvalidType,
+}
+
 impl Packet {
     /// Parse a packet.
-    pub fn parse(bytes: BytesMut) -> Result<Self> {
+    pub fn parse(bytes: BytesMut) -> Result<Self, PacketError> {
         let packet = Packet::new(bytes);
 
         if packet.version() != 1 {
-            return Err(Error::new(ErrorKind::Other, "invalid packet version"));
+            return Err(PacketError::InvalidVersion);
         }
 
         if packet.raw_type() >= 2 {
-            return Err(Error::new(ErrorKind::Other, "invalid packet type"));
+            return Err(PacketError::InvalidType);
         }
 
         Ok(packet)

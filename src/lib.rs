@@ -76,6 +76,6 @@
 #![deny(missing_docs)]
 #![deny(warnings)]
 pub mod constants;
-pub mod dtp;
 pub mod dtcp;
+pub mod dtp;
 pub mod packet;
