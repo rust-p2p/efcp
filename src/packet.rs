@@ -1,6 +1,6 @@
 //! Packet format adapted from the spec.
 //!
-//! Dropped fields already present in or not applicable to UDP/IP:
+//! # Fields present in or not applicable to UDP/IP
 //!
 //! ```text
 //! +---------------------+---------------------+
@@ -19,8 +19,8 @@
 //! | Length              | Length              |
 //! +---------------------+---------------------+
 //! ```
-use bytes::{BytesMut, BufMut};
-use byteorder::{ByteOrder, BigEndian};
+use byteorder::{BigEndian, ByteOrder};
+use bytes::{BufMut, BytesMut};
 use std::io::{Error, ErrorKind, Result};
 
 /// Packet header
@@ -30,7 +30,9 @@ use std::io::{Error, ErrorKind, Result};
 /// +-------+-------+-------+-------+
 /// | ver   | type  | flags         |
 /// +-------+-------+-------+-------+
-/// | sequence number               |   
+/// | sequence number                  
+/// +-------+-------+-------+-------+
+///                                 |
 /// +-------+-------+-------+-------+
 /// ```
 #[derive(Clone)]
@@ -48,32 +50,23 @@ pub enum Type {
     Control = 1,
 }
 
-/// The length of sequence numbers needs to be roughly
-///   2^n > (2MPL + R + A) * T
-/// where
-///   MPL: Maximum PDU lifetime
-///   R: Maximum time for retries
-///   A: Maximum time before an ack is sent
-///   T: Data rate at which sequence numbers are incremented.
-pub type SequenceNumber = u32;
+pub type SequenceNumber = u64;
 
 /// Length of the IP header.
 const IP_HEADER_LEN: usize = 20;
 /// Length of the UDP header.
 const UDP_HEADER_LEN: usize = 8;
 /// Length of the packet header.
-pub const HEADER_LEN: usize = 8;
+pub const HEADER_LEN: usize = 12;
 
 /// Maximum length of the payload.
-pub const MAX_PAYLOAD_LEN: usize = {
-    std::u16::MAX as usize - IP_HEADER_LEN - UDP_HEADER_LEN - HEADER_LEN
-};
+pub const MAX_PAYLOAD_LEN: usize =
+    { std::u16::MAX as usize - IP_HEADER_LEN - UDP_HEADER_LEN - HEADER_LEN };
 
-const DEFAULT: [u8; 8] = [
+const DEFAULT: [u8; 12] = [
     // Version, type and flags
-    1, 0, 0, 0,
-    // Default sequence number
-    0, 0, 0, 0,
+    1, 0, 0, 0, // Default sequence number
+    0, 0, 0, 0, 0, 0, 0, 0,
 ];
 
 impl Packet {
@@ -102,7 +95,7 @@ impl Packet {
         let mut bytes = BytesMut::with_capacity(HEADER_LEN + payload.len());
         bytes.put_slice(&DEFAULT);
         bytes.put_slice(payload);
-        
+
         let mut packet = Packet::new(bytes);
         packet.set_type(Type::Transfer);
         packet
@@ -125,7 +118,6 @@ impl Packet {
             _ => unreachable!(),
         }
     }
-    
 
     /// Set type.
     pub fn set_type(&mut self, ty: Type) {
@@ -133,13 +125,13 @@ impl Packet {
     }
 
     /// Get sequence number.
-    pub fn sequence_number(&self) -> u32 {
-        BigEndian::read_u32(&self.data[4..8])
+    pub fn sequence_number(&self) -> SequenceNumber {
+        BigEndian::read_u64(&self.data[4..12])
     }
-    
+
     /// Set sequence number.
-    pub fn set_sequence_number(&mut self, sn: u32) {
-        BigEndian::write_u32(&mut self.data[4..8], sn);
+    pub fn set_sequence_number(&mut self, sn: SequenceNumber) {
+        BigEndian::write_u64(&mut self.data[4..12], sn);
     }
 
     /// Get the user data.
