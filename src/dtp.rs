@@ -47,6 +47,18 @@ pub struct Dtp {
 }
 
 impl Dtp {
+    /// Create a new flow.
+    pub fn new(max_closed_window_queue_len: usize) -> Self {
+        Self {
+            dtcp: None,
+            max_closed_window_queue_len,
+            closed_window_queue: VecDeque::new(),
+            max_sequence_number_received: 0,
+            sequence_number: 0,
+            reassembly_queue: VecDeque::new(),
+        }
+    }
+
     /// Send a packet.
     pub fn send_packet(&mut self, payload: &[u8]) -> Result<(), SendError> {
         // stop sender inactivity timer

@@ -7,21 +7,16 @@
 //! the specificatin are adapted. These adaptions are noted together with their
 //! rationale where they are made. The spec can be found at [EFCP][0].
 //!
-//! ## Implementation notes
+//! ## Background UDP/IP
+//! ### IP
+//! - Addressing
+//! - Relaying
+//! - TTL
+//! - Explicit Congestion Notification
 //!
-//! ### Explicit congestion notification
-//! One feature of EFCP is explicit congestion notification which allows for
-//! different congestion control policies to be implemented, such as the DECNET
-//! binary feedback congestion control, TCP ECN congestion control or the Data
-//! Center TCP congestion control. Because we rely on existing IP routing
-//! infrastructure we do not have a mechanism for setting the ECN flag for
-//! congestion notification. Because of that we can not support advanced
-//! congestion policies.
-//!
-//! ### Configuration parameters
-//! Since this is a user space implementation, where it is assumed that each
-//! application contains it's own EFCP implementation, it is sufficient to make
-//! configuration options decisions made at compile time.
+//! ### UDP
+//! - Multiplexing
+//! - Error detection
 //!
 //! ## Reliable communication
 //! Packets are delivered in-order without duplicates or gaps.
@@ -52,23 +47,43 @@
 //!   number as a duplicate.
 //!
 //! ## Flow control
-//! TODO
+//! Mechanism to avoid a fast sender overwhelming a slow receiver. These are
+//! based on a sliding window or send rate.
+//!
+//! ## Congestion avoidance
+//! Mechanism to avoid overwhelming the network.
+//!
+//! ### Detecting congestion
+//! loss: Router drops packets proportional to congestion. The sender can detect
+//!   congestion through the number of nacks or retransmission timeouts.
+//! delay: The sender measures the round trip time. If the rtt decreases the
+//!   sender assumes network congestion and throttles it's sending rate.
+//! signal: Router explicitly sets a flag and forwards the packet. The receiver
+//!   can detect congestion and notify the sender.
+//!
+//! ### Fairness
+//! - Delay
+//! - Proportional
+//! - Max-min
+//! - Minimum delay
 //!
 //! ### Security considerations
-//! S3: Flow control cannot rely on trust between sender and receiver to achive
-//!   it. A flow control algorithm must be incentive compatible.
+//! S3: Congestion control cannot rely on trust between sender and receiver to
+//!   achive it. A congestion control algorithm must be incentive compatible.
+//!
+//! ## Multiplexing
+//! Mechanism to have multiple data streams over the same connection.
 //!
 //! ## Secure communication
 //! Secure communication must be resistant to eavesdropping and tampering.
 //!
 //! ### Conditions for secure communication
 //! confidentiality: Messages cannot be read by an eavesdropper.
-//!
 //! integrity: Data was not changed during transit.
-//!
 //! authentication: Confirm the identity of the other party.
-//!
 //! replay protection: The same data cannot be delivered multiple times.
+//!
+//! ## Compression
 //!
 //! ## References
 //! [0]: http://nes.fit.vutbr.cz/ivesely/specs/uploads/RINA/EFCPSpec140124.pdf
