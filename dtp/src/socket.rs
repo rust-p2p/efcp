@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct Channel {
     pub(crate) peer_addr: SocketAddr,
+    pub(crate) channel_id: u8,
 }
 
 struct InnerDtpSocket {
@@ -56,7 +57,7 @@ impl OuterDtpSocket {
     }
 
     fn poll_recv(&self, cx: &mut Context) -> Poll<Result<()>> {
-        let (peer_addr, buf) = {
+        let (channel, payload) = {
             let socket = self.inner.lock().unwrap();
             let mut buf = [0u8; std::u16::MAX as usize];
             let (len, peer_addr) = {
@@ -68,13 +69,17 @@ impl OuterDtpSocket {
                     Poll::Pending => return Poll::Pending,
                 }
             };
-            let mut bytes = BytesMut::with_capacity(len);
-            bytes.put(&buf[..len]);
-            (peer_addr, bytes)
+            if len < 1 {
+                return Poll::Ready(Err(Error::new(ErrorKind::Other, "invalid channel id")));
+            }
+            let channel_id = buf[0];
+            let channel = Channel { peer_addr, channel_id };
+            let mut payload = BytesMut::with_capacity(len - 1);
+            payload.put(&buf[1..len]);
+            (channel, payload)
         };
-        let channel = Channel { peer_addr };
         let mut socket = self.inner.lock().unwrap();
-        socket.rx_queue(&channel).push_back(buf);
+        socket.rx_queue(&channel).push_back(payload);
         if !socket.channels.contains(&channel) {
             socket.incoming.push_back(channel);
         }
@@ -124,9 +129,9 @@ impl OuterDtpSocket {
         }
     }
 
-    pub fn outgoing(&self, peer_addr: SocketAddr) -> Result<Channel> {
+    pub fn outgoing(&self, peer_addr: SocketAddr, channel_id: u8) -> Result<Channel> {
         let mut socket = self.inner.lock().unwrap();
-        let channel = Channel { peer_addr };
+        let channel = Channel { peer_addr, channel_id };
         if socket.channels.contains(&channel) {
             return Err(Error::new(ErrorKind::Other, "channel already taken"));
         }
@@ -140,9 +145,12 @@ impl OuterDtpSocket {
         socket.connections.remove(channel);
     }
 
-    pub async fn send(&self, channel: &Channel, packet: &[u8]) -> Result<()> {
+    pub async fn send(&self, channel: &Channel, payload: &[u8]) -> Result<()> {
         let socket = self.inner.lock().unwrap();
-        socket.udp.send_to(packet, channel.peer_addr).await?;
+        let mut bytes = BytesMut::with_capacity(payload.len() + 1);
+        bytes.put(channel.channel_id);
+        bytes.put(payload);
+        socket.udp.send_to(&bytes, channel.peer_addr).await?;
         Ok(())
     }
 }
