@@ -58,6 +58,16 @@ impl OuterDtpSocket {
         socket.udp.local_addr()
     }
 
+    pub fn ttl(&self) -> Result<u8> {
+        let socket = self.inner.lock().unwrap();
+        socket.udp.ttl()
+    }
+
+    pub fn set_ttl(&self, ttl: u8) -> Result<()> {
+        let socket = self.inner.lock().unwrap();
+        socket.udp.set_ttl(ttl)
+    }
+
     fn poll_recv(&self, cx: &mut Context) -> Poll<Result<()>> {
         let (channel, payload) = {
             let socket = self.inner.lock().unwrap();
@@ -76,7 +86,10 @@ impl OuterDtpSocket {
                 return Poll::Ready(Err(Error::new(ErrorKind::Other, "invalid channel id")));
             }
             unsafe { packet.set_len(len) };
-            let channel = Channel { peer_addr, channel_id: packet.channel() };
+            let channel = Channel {
+                peer_addr,
+                channel_id: packet.channel(),
+            };
             packet.set_ecn(ecn);
             (channel, packet)
         };
@@ -133,7 +146,10 @@ impl OuterDtpSocket {
 
     pub fn outgoing(&self, peer_addr: SocketAddr, channel_id: u8) -> Result<Channel> {
         let mut socket = self.inner.lock().unwrap();
-        let channel = Channel { peer_addr, channel_id };
+        let channel = Channel {
+            peer_addr,
+            channel_id,
+        };
         if socket.channels.contains(&channel) {
             return Err(Error::new(ErrorKind::Other, "channel already taken"));
         }
@@ -150,7 +166,10 @@ impl OuterDtpSocket {
     pub async fn send(&self, channel: &Channel, mut packet: Packet) -> Result<()> {
         let socket = self.inner.lock().unwrap();
         packet.set_channel(channel.channel_id);
-        socket.udp.send(&channel.peer_addr, packet.ecn(), packet.bytes()).await?;
+        socket
+            .udp
+            .send(&channel.peer_addr, packet.ecn(), packet.bytes())
+            .await?;
         Ok(())
     }
 }

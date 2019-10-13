@@ -13,6 +13,15 @@ impl UdpEcnSocket {
         self.0.local_addr()
     }
 
+    pub fn ttl(&self) -> Result<u8> {
+        let ttl = self.0.ttl()?;
+        Ok(ttl as u8)
+    }
+
+    pub fn set_ttl(&self, ttl: u8) -> Result<()> {
+        self.0.set_ttl(ttl as u32)
+    }
+
     pub async fn send(&self, peer_addr: &SocketAddr, _ecn: bool, payload: &[u8]) -> Result<()> {
         self.0.send_to(payload, peer_addr).await?;
         Ok(())

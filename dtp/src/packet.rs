@@ -20,10 +20,7 @@ impl Packet {
         debug_assert!(payload_len <= MAX_PAYLOAD_LEN);
         let mut bytes = BytesMut::with_capacity(payload_len + 1);
         bytes.put_u8(0);
-        Self {
-            ecn: false,
-            bytes,
-        }
+        Self { ecn: false, bytes }
     }
 
     pub(crate) fn uninitialized() -> Self {

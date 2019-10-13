@@ -156,6 +156,19 @@ impl DtpSocket {
     pub fn local_addr(&self) -> Result<SocketAddr> {
         self.socket.local_addr()
     }
+
+    /// Gets the value of the `IP_TTL` option for this socket.
+    pub fn ttl(&self) -> Result<u8> {
+        self.socket.ttl()
+    }
+
+    /// Sets the value for the `IP_TTL` option for this socket.
+    ///
+    /// This value sets the time-to-live field that is used in every packet
+    /// sent from this socket.
+    pub fn set_ttl(&self, ttl: u8) -> Result<()> {
+        self.socket.set_ttl(ttl)
+    }
 }
 
 /// A stream of incoming DTP connections.
@@ -355,7 +368,7 @@ mod tests {
         task::block_on(outgoing_incoming()).unwrap();
     }
 
-   async fn outgoing_outgoing() -> Result<(), Error> {
+    async fn outgoing_outgoing() -> Result<(), Error> {
         let socket1 = DtpSocket::bind("127.0.0.1:0".parse()?).await?;
         let addr1 = socket1.local_addr()?;
 
@@ -376,5 +389,18 @@ mod tests {
     #[test]
     fn test_outgoing_outgoing() {
         task::block_on(outgoing_outgoing()).unwrap();
+    }
+
+    async fn ttl() -> Result<(), Error> {
+        let socket = DtpSocket::bind("127.0.0.1:0".parse()?).await?;
+        let ttl = socket.ttl()?;
+        socket.set_ttl(ttl + 10)?;
+        assert_eq!(socket.ttl()?, ttl + 10);
+        Ok(())
+    }
+
+    #[test]
+    fn test_ttl() {
+        task::block_on(ttl()).unwrap();
     }
 }
