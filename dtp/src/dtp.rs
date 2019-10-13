@@ -1,7 +1,6 @@
 use crate::packet::Packet;
 use crate::udp::UdpEcnSocket;
 use async_std::io::{Error, ErrorKind, Result};
-use async_std::net::UdpSocket;
 use async_std::task::{Context, Poll};
 use bytes::BufMut;
 use pin_utils::pin_mut;
@@ -24,13 +23,14 @@ struct InnerDtpSocket {
 }
 
 impl InnerDtpSocket {
-    fn from_socket(socket: UdpSocket) -> Self {
-        Self {
-            udp: UdpEcnSocket::from_socket(socket),
+    async fn bind(addr: SocketAddr) -> Result<Self> {
+        let socket = UdpEcnSocket::bind(addr).await?;
+        Ok(Self {
+            udp: socket,
             connections: HashMap::new(),
             channels: HashSet::new(),
             incoming: VecDeque::new(),
-        }
+        })
     }
 
     fn rx_queue(&mut self, channel: &Channel) -> &mut VecDeque<Packet> {
@@ -47,10 +47,11 @@ pub(crate) struct OuterDtpSocket {
 }
 
 impl OuterDtpSocket {
-    pub fn from_socket(socket: UdpSocket) -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(InnerDtpSocket::from_socket(socket))),
-        }
+    pub async fn bind(addr: SocketAddr) -> Result<Self> {
+        let socket = InnerDtpSocket::bind(addr).await?;
+        Ok(Self {
+            inner: Arc::new(Mutex::new(socket)),
+        })
     }
 
     pub fn local_addr(&self) -> Result<SocketAddr> {

@@ -14,12 +14,12 @@
 #![deny(warnings)]
 mod dtp;
 mod packet;
+mod platform;
 mod udp;
 
 use crate::dtp::{Channel, OuterDtpSocket};
 pub use crate::packet::Packet;
 use async_std::io::Result;
-use async_std::net::UdpSocket;
 use async_std::stream::Stream;
 use async_std::task::{Context, Poll};
 use std::future::Future;
@@ -84,8 +84,7 @@ impl DtpSocket {
     /// #
     /// # Ok(()) }) }
     pub async fn bind(addr: SocketAddr) -> Result<Self> {
-        let socket = UdpSocket::bind(addr).await?;
-        let socket = OuterDtpSocket::from_socket(socket);
+        let socket = OuterDtpSocket::bind(addr).await?;
         Ok(Self { socket })
     }
 
