@@ -1,7 +1,9 @@
+use crate::packet::Packet;
+use crate::udp::UdpEcnSocket;
 use async_std::io::{Error, ErrorKind, Result};
 use async_std::net::UdpSocket;
 use async_std::task::{Context, Poll};
-use bytes::{BufMut, BytesMut};
+use bytes::BufMut;
 use pin_utils::pin_mut;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
@@ -15,8 +17,8 @@ pub(crate) struct Channel {
 }
 
 struct InnerDtpSocket {
-    udp: UdpSocket,
-    connections: HashMap<Channel, VecDeque<BytesMut>>,
+    udp: UdpEcnSocket,
+    connections: HashMap<Channel, VecDeque<Packet>>,
     channels: HashSet<Channel>,
     incoming: VecDeque<Channel>,
 }
@@ -24,14 +26,14 @@ struct InnerDtpSocket {
 impl InnerDtpSocket {
     fn from_socket(socket: UdpSocket) -> Self {
         Self {
-            udp: socket,
+            udp: UdpEcnSocket::from_socket(socket),
             connections: HashMap::new(),
             channels: HashSet::new(),
             incoming: VecDeque::new(),
         }
     }
 
-    fn rx_queue(&mut self, channel: &Channel) -> &mut VecDeque<BytesMut> {
+    fn rx_queue(&mut self, channel: &Channel) -> &mut VecDeque<Packet> {
         if !self.connections.contains_key(channel) {
             self.connections.insert(channel.clone(), VecDeque::new());
         }
@@ -59,9 +61,10 @@ impl OuterDtpSocket {
     fn poll_recv(&self, cx: &mut Context) -> Poll<Result<()>> {
         let (channel, payload) = {
             let socket = self.inner.lock().unwrap();
-            let mut buf = [0u8; std::u16::MAX as usize];
-            let (len, peer_addr) = {
-                let recv_fut = socket.udp.recv_from(&mut buf);
+            let mut packet = Packet::uninitialized();
+            let mut buf = unsafe { packet.bytes_mut() };
+            let (peer_addr, len, ecn) = {
+                let recv_fut = socket.udp.recv(&mut buf);
                 pin_mut!(recv_fut);
                 match recv_fut.poll(cx) {
                     Poll::Ready(Ok(res)) => res,
@@ -72,11 +75,10 @@ impl OuterDtpSocket {
             if len < 1 {
                 return Poll::Ready(Err(Error::new(ErrorKind::Other, "invalid channel id")));
             }
-            let channel_id = buf[0];
-            let channel = Channel { peer_addr, channel_id };
-            let mut payload = BytesMut::with_capacity(len - 1);
-            payload.put(&buf[1..len]);
-            (channel, payload)
+            unsafe { packet.set_len(len) };
+            let channel = Channel { peer_addr, channel_id: packet.channel() };
+            packet.set_ecn(ecn);
+            (channel, packet)
         };
         let mut socket = self.inner.lock().unwrap();
         socket.rx_queue(&channel).push_back(payload);
@@ -109,7 +111,7 @@ impl OuterDtpSocket {
         }
     }
 
-    pub fn poll_channel(&self, cx: &mut Context, channel: &Channel) -> Poll<Result<BytesMut>> {
+    pub fn poll_channel(&self, cx: &mut Context, channel: &Channel) -> Poll<Result<Packet>> {
         {
             let mut socket = self.inner.lock().unwrap();
             if let Some(packet) = socket.rx_queue(channel).pop_front() {
@@ -145,12 +147,10 @@ impl OuterDtpSocket {
         socket.connections.remove(channel);
     }
 
-    pub async fn send(&self, channel: &Channel, payload: &[u8]) -> Result<()> {
+    pub async fn send(&self, channel: &Channel, mut packet: Packet) -> Result<()> {
         let socket = self.inner.lock().unwrap();
-        let mut bytes = BytesMut::with_capacity(payload.len() + 1);
-        bytes.put(channel.channel_id);
-        bytes.put(payload);
-        socket.udp.send_to(&bytes, channel.peer_addr).await?;
+        packet.set_channel(channel.channel_id);
+        socket.udp.send(&channel.peer_addr, packet.ecn(), packet.bytes()).await?;
         Ok(())
     }
 }

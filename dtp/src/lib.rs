@@ -12,14 +12,16 @@
 //!
 #![deny(missing_docs)]
 #![deny(warnings)]
-mod socket;
+mod dtp;
+mod packet;
+mod udp;
 
-use crate::socket::{Channel, OuterDtpSocket};
+use crate::dtp::{Channel, OuterDtpSocket};
+pub use crate::packet::Packet;
 use async_std::io::Result;
 use async_std::net::UdpSocket;
 use async_std::stream::Stream;
 use async_std::task::{Context, Poll};
-use bytes::BytesMut;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -41,7 +43,7 @@ use std::pin::Pin;
 ///
 /// let socket = DtpSocket::bind("127.0.0.1:8001".parse()?).await?;
 /// let mut channel = socket.outgoing("127.0.0.1:8002".parse()?, 0)?;
-/// channel.send(b"ping").await?;
+/// channel.send("ping".into()).await?;
 /// let response = channel.recv().await?;
 /// #
 /// # Ok(()) }) }
@@ -56,7 +58,7 @@ use std::pin::Pin;
 /// let mut incoming = socket.incoming();
 /// while let Some(channel) = incoming.next().await {
 ///     let channel = channel?;
-///     channel.send(b"pong").await?;
+///     channel.send("pong".into()).await?;
 /// }
 /// #
 /// # Ok(()) }) }
@@ -104,7 +106,7 @@ impl DtpSocket {
     /// let mut incoming = socket.incoming();
     /// while let Some(channel) = incoming.next().await {
     ///     let channel = channel?;
-    ///     channel.send(b"hello world").await?;
+    ///     channel.send("hello world".into()).await?;
     /// }
     /// #
     /// # Ok(()) }) }
@@ -126,7 +128,7 @@ impl DtpSocket {
     ///
     /// let socket = DtpSocket::bind("127.0.0.1:8001".parse()?).await?;
     /// let channel = socket.outgoing("127.0.0.1:8002".parse()?, 0)?;
-    /// channel.send(b"ping").await?;
+    /// channel.send("ping".into()).await?;
     /// let response = channel.recv().await?;
     /// #
     /// # Ok(()) }) }
@@ -196,7 +198,7 @@ impl<'a> Stream for Incoming<'a> {
 ///
 /// let socket = DtpSocket::bind("127.0.0.1:8001".parse()?).await?;
 /// let channel = socket.outgoing("127.0.0.1:8002".parse()?, 0)?;
-/// channel.send(b"ping").await?;
+/// channel.send("ping".into()).await?;
 /// let response = channel.recv().await?;
 /// #
 /// # Ok(()) }) }
@@ -255,7 +257,7 @@ impl DtpChannel {
     /// while let Some(channel) = incoming.next().await {
     ///     let channel = channel?;
     ///     if channel.channel() == 0 {
-    ///         channel.send(b"hello world").await?;
+    ///         channel.send("hello world".into()).await?;
     ///     }
     /// }
     /// #
@@ -292,10 +294,10 @@ impl DtpChannel {
     ///
     /// let socket = DtpSocket::bind("127.0.0.1:8001".parse()?).await?;
     /// let channel = socket.outgoing("127.0.0.1:8002".parse()?, 0)?;
-    /// channel.send(b"ping").await?;
+    /// channel.send("ping".into()).await?;
     /// #
     /// # Ok(()) }) }
-    pub async fn send(&self, packet: &[u8]) -> Result<()> {
+    pub async fn send(&self, packet: Packet) -> Result<()> {
         self.socket.send(&self.channel, packet).await
     }
 }
@@ -310,7 +312,7 @@ impl Drop for DtpChannel {
 pub struct RecvFuture<'a>(&'a DtpChannel);
 
 impl<'a> Future for RecvFuture<'a> {
-    type Output = Result<BytesMut>;
+    type Output = Result<Packet>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         self.0.socket.poll_channel(cx, &self.0.channel)
@@ -332,18 +334,18 @@ mod tests {
         let addr_initiator = socket_initiator.local_addr()?;
 
         let channel_initiator = socket_initiator.outgoing(addr_responder, 0)?;
-        channel_initiator.send(b"ping").await?;
+        channel_initiator.send("ping".into()).await?;
 
         let mut incoming = socket_responder.incoming();
         let channel_responder = incoming.next().await.unwrap()?;
         assert_eq!(channel_responder.peer_addr(), &addr_initiator);
 
-        let request = channel_responder.recv().await?;
-        assert_eq!(&request[..], b"ping");
+        let packet = channel_responder.recv().await?;
+        assert_eq!(packet.payload(), b"ping");
 
-        channel_responder.send(b"pong").await?;
-        let response = channel_initiator.recv().await?;
-        assert_eq!(&response[..], b"pong");
+        channel_responder.send("pong".into()).await?;
+        let packet = channel_initiator.recv().await?;
+        assert_eq!(packet.payload(), b"pong");
 
         Ok(())
     }
@@ -361,12 +363,12 @@ mod tests {
         let addr2 = socket2.local_addr()?;
 
         let channel1 = socket1.outgoing(addr2, 3)?;
-        channel1.send(b"ping").await?;
+        channel1.send("ping".into()).await?;
 
         let channel2 = socket2.outgoing(addr1, 3)?;
-        let bytes = channel2.recv().await?;
+        let packet = channel2.recv().await?;
 
-        assert_eq!(&bytes[..], b"ping");
+        assert_eq!(packet.payload(), b"ping");
 
         Ok(())
     }
