@@ -1,0 +1,11 @@
+[package]
+name = "dtcp"
+version = "0.1.0"
+authors = ["David Craven <david@craven.ch>"]
+edition = "2018"
+
+[dependencies]
+dtp = { path = "../dtp" }
+
+[dev-dependencies]
+channel = { path = "../channel" }

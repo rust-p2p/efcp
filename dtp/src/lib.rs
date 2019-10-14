@@ -8,8 +8,6 @@
 //!
 //! ## ECN
 //!
-//! ## Comparison to TCP
-//!
 #![deny(missing_docs)]
 #![deny(warnings)]
 mod dtp;

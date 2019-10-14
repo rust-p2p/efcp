@@ -11,5 +11,7 @@ failure = "0.1.5"
 
 [workspace]
 members = [
-  "dtp"
+  "channel",
+  "dtp",
+  "dtcp",
 ]
