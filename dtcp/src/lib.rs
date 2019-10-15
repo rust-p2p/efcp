@@ -70,25 +70,101 @@ use async_trait::async_trait;
 use channel::Channel;
 use dtp::Packet;
 use std::io::Result;
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+struct Timer {
+    enable: bool,
+    start: Instant,
+    interval: Duration,
+}
+
+impl Timer {
+    fn new(interval: Duration) -> Self {
+        Self {
+            enable: false,
+            start: Instant::now(),
+            interval,
+        }
+    }
+
+    fn start(&mut self) {
+        self.start = Instant::now();
+        self.enable = true;
+    }
+
+    fn stop(&mut self) -> bool {
+        if self.enable {
+            self.enable = false;
+            Instant::now() - self.start > self.interval
+        } else {
+            false
+        }
+    }
+}
+
+/// Builder for dtcp channels.
+pub struct DtcpBuilder {
+    mpl: Duration,
+    ack: Duration,
+    max_retries: u8,
+}
+
+impl DtcpBuilder {
+    /// Creates a new `DtcpBuilder`.
+    pub fn new() -> Self {
+        Self {
+            mpl: Duration::from_millis(1000),
+            ack: Duration::from_millis(100),
+            max_retries: 3,
+        }
+    }
+
+    /// Sets the maximum packet lifetime.
+    pub fn set_mpl(mut self, mpl: Duration) -> Self {
+        self.mpl = mpl;
+        self
+    }
+
+    /// Sets the maximum time to ack.
+    pub fn set_ack(mut self, ack: Duration) -> Self {
+        self.ack = ack;
+        self
+    }
+
+    /// Sets the maximum number of retries.
+    pub fn set_max_retries(mut self, max_retries: u8) -> Self {
+        self.max_retries = max_retries;
+        self
+    }
+
+    /// Wrapps a dtp channel in a dtcp channel.
+    pub fn build_channel<T>(&self, channel: T) -> DtcpChannel
+    where
+        T: Channel<Packet = Packet> + Send + Sync + 'static,
+    {
+        let dx = 2 * self.mpl + self.ack;
+        let dt = (self.max_retries + 1) as u32 * dx;
+        let sit = 2 * dt;
+        let rit = 3 * dt;
+        DtcpChannel {
+            channel: Box::new(channel),
+            set_drf: AtomicBool::new(true),
+            seq_num: AtomicU16::new(0),
+            sit: Mutex::new(Timer::new(sit)),
+            rit: Mutex::new(Timer::new(rit)),
+        }
+    }
+}
 
 /// Dtcp channel.
 pub struct DtcpChannel {
     channel: Box<dyn Channel<Packet = Packet> + Send + Sync>,
+    set_drf: AtomicBool,
     seq_num: AtomicU16,
-}
-
-impl DtcpChannel {
-    /// Creates a new dtcp channel.
-    pub fn new<T>(channel: T) -> Self
-    where
-        T: Channel<Packet = Packet> + Send + Sync + 'static,
-    {
-        Self {
-            channel: Box::new(channel),
-            seq_num: AtomicU16::new(0),
-        }
-    }
+    sit: Mutex<Timer>,
+    rit: Mutex<Timer>,
 }
 
 #[async_trait]
@@ -96,15 +172,22 @@ impl Channel for DtcpChannel {
     type Packet = DtcpPacket;
 
     async fn send(&self, mut packet: Self::Packet) -> Result<()> {
+        let expired = self.sit.lock().unwrap().stop();
+        let drf = self.set_drf.swap(false, Ordering::SeqCst) || expired;
         let seq_num = self.seq_num.fetch_add(1, Ordering::SeqCst);
-        packet.set_ty(DtcpType::Transfer);
+        packet.set_ty(DtcpType::Transfer { drf });
         packet.set_seq_num(seq_num);
-        self.channel.send(packet.into_packet()).await
+        self.channel.send(packet.into_packet()).await?;
+        self.sit.lock().unwrap().start();
+        Ok(())
     }
 
     async fn recv(&self) -> Result<Self::Packet> {
+        let expired = self.rit.lock().unwrap().stop();
+        self.set_drf.store(expired, Ordering::SeqCst);
         let packet = self.channel.recv().await?;
         let packet = DtcpPacket::parse(packet)?;
+        self.rit.lock().unwrap().start();
         Ok(packet)
     }
 }
@@ -115,10 +198,16 @@ mod tests {
     use async_std::task;
     use test_channel::LossyChannel;
 
-    async fn dtcp_channel() -> Result<()> {
-        let (a, b) = LossyChannel::new(1.0, 0.0).split();
-        let a = DtcpChannel::new(a);
-        let b = DtcpChannel::new(b);
+    fn setup(dtcp: DtcpBuilder, px: f64, pq: f64) -> (DtcpChannel, DtcpChannel) {
+        let (a, b) = LossyChannel::new(px, pq).split();
+        let a = dtcp.build_channel(a);
+        let b = dtcp.build_channel(b);
+        (a, b)
+    }
+
+    async fn single_packet(px: f64, pq: f64) -> Result<()> {
+        let dtcp = DtcpBuilder::new();
+        let (a, b) = setup(dtcp, px, pq);
         a.send("ping".into()).await?;
         let packet = b.recv().await?;
         assert_eq!(packet.payload(), b"ping");
@@ -126,7 +215,12 @@ mod tests {
     }
 
     #[test]
-    fn test_dtcp_channel() {
-        task::block_on(dtcp_channel()).unwrap();
+    fn test_reliable() {
+        task::block_on(single_packet(1.0, 0.0)).unwrap();
+    }
+
+    #[test]
+    fn test_partition() {
+        task::block_on(single_packet(0.0, 0.0)).unwrap();
     }
 }

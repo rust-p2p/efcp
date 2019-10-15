@@ -1,17 +1,20 @@
 //! Defines the DTCP packet format.
-use bytes::BufMut;
 use byteorder::{BigEndian, ByteOrder};
+use bytes::BufMut;
 use dtp::Packet;
 use std::io::{Error, ErrorKind, Result};
 
 /// Type of PDU.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u8)]
 pub enum DtcpType {
     /// Data PDU.
-    Transfer = 0,
+    Transfer {
+        /// Data run flag indicates that this is the first packet of a run and
+        /// that all previous packets have been acked.
+        drf: bool,
+    },
     /// Control PDU.
-    Control = 1,
+    Control,
 }
 
 /// DTCP Header:
@@ -34,12 +37,11 @@ impl DtcpPacket {
         if packet.payload().len() < 3 {
             return Err(Self::invalid());
         }
-
-        if packet.payload()[0] >= 2 {
+        let packet = Self(packet);
+        if packet.raw_type() >= 2 {
             return Err(Self::invalid());
         }
-
-        Ok(Self(packet))
+        Ok(packet)
     }
 
     fn invalid() -> Error {
@@ -47,21 +49,37 @@ impl DtcpPacket {
     }
 
     fn raw_type(&self) -> u8 {
-        self.0.payload()[0]
+        self.0.payload()[0] >> 4
     }
-    
+
+    fn flag0(&self) -> bool {
+        self.0.payload()[0] & 0b0001 > 0
+    }
+
     pub(crate) fn ty(&self) -> DtcpType {
         match self.raw_type() {
-            0 => DtcpType::Transfer,
+            0 => DtcpType::Transfer { drf: self.flag0() },
             1 => DtcpType::Control,
             _ => unreachable!(),
         }
     }
 
     pub(crate) fn set_ty(&mut self, ty: DtcpType) {
-        self.0.payload_mut()[0] = ty as u8;
+        let byte = match ty {
+            DtcpType::Transfer { drf } => {
+                let ty = 0;
+                let flags = if drf { 1 } else { 0 };
+                ty | flags
+            }
+            DtcpType::Control => {
+                let ty = 1 << 4;
+                let flags = 0;
+                ty | flags
+            }
+        };
+        self.0.payload_mut()[0] = byte;
     }
-    
+
     pub(crate) fn seq_num(&self) -> u16 {
         BigEndian::read_u16(&self.0.payload()[1..3])
     }
