@@ -62,29 +62,71 @@
 //! [0]: http://nes.fit.vutbr.cz/ivesely/specs/uploads/RINA/EFCPSpec140124.pdf
 //! [1]: Timer-Based Mechanisms in Reliable Transport Connection Management
 #![deny(missing_docs)]
-//#![deny(warnings)]
-pub mod packet;
+#![deny(warnings)]
+mod packet;
 
+pub use crate::packet::{DtcpPacket, DtcpType};
 use async_trait::async_trait;
 use channel::Channel;
 use dtp::Packet;
 use std::io::Result;
+use std::sync::atomic::{AtomicU16, Ordering};
 
 /// Dtcp channel.
 pub struct DtcpChannel {
     channel: Box<dyn Channel<Packet = Packet> + Send + Sync>,
-    seq_num: u16,
+    seq_num: AtomicU16,
+}
+
+impl DtcpChannel {
+    /// Creates a new dtcp channel.
+    pub fn new<T>(channel: T) -> Self
+    where
+        T: Channel<Packet = Packet> + Send + Sync + 'static,
+    {
+        Self {
+            channel: Box::new(channel),
+            seq_num: AtomicU16::new(0),
+        }
+    }
 }
 
 #[async_trait]
 impl Channel for DtcpChannel {
-    type Packet = Packet;
+    type Packet = DtcpPacket;
 
-    async fn send(&self, packet: Self::Packet) -> Result<()> {
-        self.channel.send(packet).await
+    async fn send(&self, mut packet: Self::Packet) -> Result<()> {
+        let seq_num = self.seq_num.fetch_add(1, Ordering::SeqCst);
+        packet.set_ty(DtcpType::Transfer);
+        packet.set_seq_num(seq_num);
+        self.channel.send(packet.into_packet()).await
     }
 
-    async fn recv(&self) -> Result<Packet> {
-        self.channel.recv().await
+    async fn recv(&self) -> Result<Self::Packet> {
+        let packet = self.channel.recv().await?;
+        let packet = DtcpPacket::parse(packet)?;
+        Ok(packet)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_std::task;
+    use test_channel::LossyChannel;
+
+    async fn dtcp_channel() -> Result<()> {
+        let (a, b) = LossyChannel::new(1.0, 0.0).split();
+        let a = DtcpChannel::new(a);
+        let b = DtcpChannel::new(b);
+        a.send("ping".into()).await?;
+        let packet = b.recv().await?;
+        assert_eq!(packet.payload(), b"ping");
+        Ok(())
+    }
+
+    #[test]
+    fn test_dtcp_channel() {
+        task::block_on(dtcp_channel()).unwrap();
     }
 }

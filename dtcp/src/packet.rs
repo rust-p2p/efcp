@@ -7,7 +7,7 @@ use std::io::{Error, ErrorKind, Result};
 /// Type of PDU.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
-pub enum Type {
+pub enum DtcpType {
     /// Data PDU.
     Transfer = 0,
     /// Control PDU.
@@ -50,15 +50,15 @@ impl DtcpPacket {
         self.0.payload()[0]
     }
     
-    pub(crate) fn ty(&self) -> Type {
+    pub(crate) fn ty(&self) -> DtcpType {
         match self.raw_type() {
-            0 => Type::Transfer,
-            1 => Type::Control,
+            0 => DtcpType::Transfer,
+            1 => DtcpType::Control,
             _ => unreachable!(),
         }
     }
 
-    pub(crate) fn set_ty(&mut self, ty: Type) {
+    pub(crate) fn set_ty(&mut self, ty: DtcpType) {
         self.0.payload_mut()[0] = ty as u8;
     }
     
@@ -83,6 +83,34 @@ impl DtcpPacket {
     /// Returns a packet.
     pub fn into_packet(self) -> Packet {
         self.0
+    }
+}
+
+impl BufMut for DtcpPacket {
+    fn remaining_mut(&self) -> usize {
+        self.0.remaining_mut()
+    }
+
+    unsafe fn advance_mut(&mut self, by: usize) {
+        self.0.advance_mut(by)
+    }
+
+    unsafe fn bytes_mut(&mut self) -> &mut [u8] {
+        self.0.bytes_mut()
+    }
+}
+
+impl From<&[u8]> for DtcpPacket {
+    fn from(payload: &[u8]) -> Self {
+        let mut packet = DtcpPacket::new(payload.len());
+        packet.put(payload);
+        packet
+    }
+}
+
+impl From<&str> for DtcpPacket {
+    fn from(payload: &str) -> Self {
+        Self::from(payload.as_bytes())
     }
 }
 
