@@ -62,7 +62,9 @@
 //! [0]: http://nes.fit.vutbr.cz/ivesely/specs/uploads/RINA/EFCPSpec140124.pdf
 //! [1]: Timer-Based Mechanisms in Reliable Transport Connection Management
 #![deny(missing_docs)]
-#![deny(warnings)]
+//#![deny(warnings)]
+pub mod packet;
+
 use async_trait::async_trait;
 use channel::Channel;
 use dtp::Packet;
@@ -71,6 +73,7 @@ use std::io::Result;
 /// Dtcp channel.
 pub struct DtcpChannel {
     channel: Box<dyn Channel<Packet = Packet> + Send + Sync>,
+    seq_num: u16,
 }
 
 #[async_trait]

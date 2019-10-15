@@ -16,7 +16,7 @@ pub struct Packet {
 }
 
 impl Packet {
-    /// Creates a new packet with a given size.
+    /// Creates a new packet that fits the payload.
     pub fn new(payload_len: usize) -> Self {
         debug_assert!(payload_len <= MAX_PAYLOAD_LEN);
         let mut bytes = BytesMut::with_capacity(payload_len + 1);
@@ -43,7 +43,8 @@ impl Packet {
         self.ecn = ecn;
     }
 
-    pub(crate) fn channel(&self) -> u8 {
+    /// Returns the channel of a packet.
+    pub fn channel(&self) -> u8 {
         self.bytes[0]
     }
 
@@ -54,6 +55,11 @@ impl Packet {
     /// Returns the payload of the packet.
     pub fn payload(&self) -> &[u8] {
         &self.bytes[1..]
+    }
+
+    /// Returns the mutable payload of the packet.
+    pub fn payload_mut(&mut self) -> &mut [u8] {
+        &mut self.bytes[1..]
     }
 
     pub(crate) fn bytes(&self) -> &[u8] {
@@ -90,11 +96,11 @@ impl From<&str> for Packet {
 }
 
 impl std::fmt::Debug for Packet {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         f.debug_struct("Packet")
-            .field("ECN", &self.ecn())
-            .field("Channel", &self.channel())
-            .field("Payload", &self.payload().len())
+            .field("ecn", &self.ecn())
+            .field("channel", &self.channel())
+            .field("payload", &self.payload().len())
             .finish()
     }
 }

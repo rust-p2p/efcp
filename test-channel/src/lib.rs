@@ -152,7 +152,7 @@ impl<T> LossyChannel<T> {
 }
 
 impl<T> std::fmt::Display for LossyChannel<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> core::result::Result<(), std::fmt::Error> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         writeln!(f, "p(transmission) = {}", self.px)?;
         writeln!(f, "p(queue) = {}", self.pq)?;
         writeln!(f, "p(success) = {}", self.probability(Tx::Success))?;
