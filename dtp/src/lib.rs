@@ -20,9 +20,9 @@ pub use crate::packet::Packet;
 use async_std::io::Result;
 use async_std::stream::Stream;
 use async_std::task::{Context, Poll};
-use std::future::Future;
+use core::future::Future;
+use core::pin::Pin;
 use std::net::SocketAddr;
-use std::pin::Pin;
 
 /// A DTP socket.
 ///
@@ -307,8 +307,11 @@ impl DtpChannel {
     /// channel.send("ping".into()).await?;
     /// #
     /// # Ok(()) }) }
-    pub async fn send(&self, packet: Packet) -> Result<()> {
-        self.socket.send(&self.channel, packet).await
+    pub fn send(&self, packet: Packet) -> SendFuture {
+        SendFuture {
+            channel: self,
+            packet,
+        }
     }
 }
 
@@ -329,11 +332,41 @@ impl<'a> Future for RecvFuture<'a> {
     }
 }
 
+/// Future resolves when packet was sent on the channel.
+pub struct SendFuture<'a> {
+    channel: &'a DtpChannel,
+    packet: Packet,
+}
+
+impl<'a> Future for SendFuture<'a> {
+    type Output = Result<()>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
+        self.channel
+            .socket
+            .poll_send(cx, &self.channel.channel, &mut self.packet)
+    }
+}
+
+#[async_trait::async_trait]
+impl channel::Channel for DtpChannel {
+    type Packet = Packet;
+
+    async fn send(&self, packet: Self::Packet) -> Result<()> {
+        self.send(packet).await
+    }
+
+    async fn recv(&self) -> Result<Self::Packet> {
+        self.recv().await
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::DtpSocket;
+    use super::{DtpSocket, Packet};
     use async_std::prelude::*;
     use async_std::task;
+    use channel::Channel;
     use failure::Error;
 
     async fn outgoing_incoming() -> Result<(), Error> {
@@ -399,5 +432,28 @@ mod tests {
     #[test]
     fn test_ttl() {
         task::block_on(ttl()).unwrap();
+    }
+
+    async fn channel() -> Result<(), Error> {
+        let socket1 = DtpSocket::bind("127.0.0.1:0".parse()?).await?;
+        let addr1 = socket1.local_addr()?;
+
+        let socket2 = DtpSocket::bind("127.0.0.1:0".parse()?).await?;
+        let addr2 = socket2.local_addr()?;
+
+        let channel1: Box<dyn Channel<Packet = Packet>> = Box::new(socket1.outgoing(addr2, 3)?);
+        channel1.send("ping".into()).await?;
+
+        let channel2: Box<dyn Channel<Packet = Packet>> = Box::new(socket2.outgoing(addr1, 3)?);
+        let packet = channel2.recv().await?;
+
+        assert_eq!(packet.payload(), b"ping");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_channel() {
+        task::block_on(channel()).unwrap();
     }
 }

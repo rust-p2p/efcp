@@ -3,9 +3,7 @@ use crate::udp::UdpEcnSocket;
 use async_std::io::{Error, ErrorKind, Result};
 use async_std::task::{Context, Poll};
 use bytes::BufMut;
-use pin_utils::pin_mut;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
@@ -75,9 +73,7 @@ impl OuterDtpSocket {
             let mut packet = Packet::uninitialized();
             let mut buf = unsafe { packet.bytes_mut() };
             let (peer_addr, len, ecn) = {
-                let recv_fut = socket.udp.recv(&mut buf);
-                pin_mut!(recv_fut);
-                match recv_fut.poll(cx) {
+                match socket.udp.poll_recv(cx, &mut buf) {
                     Poll::Ready(Ok(res)) => res,
                     Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
                     Poll::Pending => return Poll::Pending,
@@ -164,13 +160,16 @@ impl OuterDtpSocket {
         socket.connections.remove(channel);
     }
 
-    pub async fn send(&self, channel: &Channel, mut packet: Packet) -> Result<()> {
+    pub fn poll_send(
+        &self,
+        cx: &mut Context,
+        channel: &Channel,
+        packet: &mut Packet,
+    ) -> Poll<Result<()>> {
         let socket = self.inner.lock().unwrap();
         packet.set_channel(channel.channel_id);
         socket
             .udp
-            .send(&channel.peer_addr, packet.ecn(), packet.bytes())
-            .await?;
-        Ok(())
+            .poll_send(cx, &channel.peer_addr, packet.ecn(), packet.bytes())
     }
 }
