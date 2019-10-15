@@ -9,6 +9,7 @@ const MAX_HEADER_LEN: usize = IP6_HEADER_LEN + UDP_HEADER_LEN + 1;
 pub const MAX_PAYLOAD_LEN: usize = MAX_PACKET_LEN - MAX_HEADER_LEN;
 
 /// A packet sendable via dtp.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Packet {
     ecn: bool,
     bytes: BytesMut,
@@ -85,5 +86,15 @@ impl From<&[u8]> for Packet {
 impl From<&str> for Packet {
     fn from(payload: &str) -> Self {
         Self::from(payload.as_bytes())
+    }
+}
+
+impl std::fmt::Debug for Packet {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+        f.debug_struct("Packet")
+            .field("ECN", &self.ecn())
+            .field("Channel", &self.channel())
+            .field("Payload", &self.payload().len())
+            .finish()
     }
 }
