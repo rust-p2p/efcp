@@ -196,18 +196,27 @@ impl Channel for DtcpChannel {
 mod tests {
     use super::*;
     use async_std::task;
+    use dtp::DtpSocket;
     use test_channel::LossyChannel;
 
-    fn setup(dtcp: DtcpBuilder, px: f64, pq: f64) -> (DtcpChannel, DtcpChannel) {
+    fn setup_mock(dtcp: DtcpBuilder, px: f64, pq: f64) -> (DtcpChannel, DtcpChannel) {
         let (a, b) = LossyChannel::new(px, pq).split();
         let a = dtcp.build_channel(a);
         let b = dtcp.build_channel(b);
         (a, b)
     }
 
-    async fn single_packet(px: f64, pq: f64) -> Result<()> {
-        let dtcp = DtcpBuilder::new();
-        let (a, b) = setup(dtcp, px, pq);
+    fn setup_dtp(dtcp: DtcpBuilder) -> (DtcpChannel, DtcpChannel) {
+        task::block_on(async {
+            let s1 = DtpSocket::bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
+            let s2 = DtpSocket::bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
+            let a = dtcp.build_channel(s1.outgoing(s2.local_addr().unwrap(), 0).unwrap());
+            let b = dtcp.build_channel(s2.outgoing(s1.local_addr().unwrap(), 0).unwrap());
+            (a, b)
+        })
+    }
+
+    async fn single_packet(a: DtcpChannel, b: DtcpChannel) -> Result<()> {
         a.send("ping".into()).await?;
         let packet = b.recv().await?;
         assert_eq!(packet.payload(), b"ping");
@@ -215,12 +224,23 @@ mod tests {
     }
 
     #[test]
-    fn test_reliable() {
-        task::block_on(single_packet(1.0, 0.0)).unwrap();
+    fn test_mock_reliable() {
+        let dtcp = DtcpBuilder::new();
+        let (a, b) = setup_mock(dtcp, 1.0, 0.0);
+        task::block_on(single_packet(a, b)).unwrap();
     }
 
+    /*#[test]
+    fn test_mock_partition() {
+        let dtcp = DtcpBuilder::new();
+        let (a, b) = setup_mock(dtcp, 0.0, 0.0);
+        task::block_on(single_packet(a, b)).unwrap();
+    }*/
+
     #[test]
-    fn test_partition() {
-        task::block_on(single_packet(0.0, 0.0)).unwrap();
+    fn test_dtp() {
+        let dtcp = DtcpBuilder::new();
+        let (a, b) = setup_dtp(dtcp);
+        task::block_on(single_packet(a, b)).unwrap();
     }
 }
