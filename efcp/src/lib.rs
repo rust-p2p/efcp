@@ -50,6 +50,7 @@
 //! The application protocol has a unique protocol identifier, which is used
 //! to negotiate the application protocol using the generic protocol negotiation
 //! mechanism.
+pub mod negotiation;
 
 #[cfg(test)]
 mod tests {
