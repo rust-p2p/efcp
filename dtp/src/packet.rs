@@ -1,4 +1,6 @@
 use bytes::{BufMut, BytesMut};
+use channel::BasePacket;
+use std::io::{Error, ErrorKind, Result};
 
 const MAX_PACKET_LEN: usize = std::u16::MAX as usize;
 // const IP4_HEADER_LEN: usize = 20;
@@ -10,20 +12,41 @@ pub const MAX_PAYLOAD_LEN: usize = MAX_PACKET_LEN - MAX_HEADER_LEN;
 
 /// A packet sendable via dtp.
 #[derive(Clone, PartialEq, Eq)]
-pub struct Packet {
+pub struct DtpPacket {
     ecn: bool,
     bytes: BytesMut,
 }
 
-impl Packet {
-    /// Creates a new packet that fits the payload.
-    pub fn new(payload_len: usize) -> Self {
+impl BasePacket for DtpPacket {
+    fn new(payload_len: usize) -> Self {
         debug_assert!(payload_len <= MAX_PAYLOAD_LEN);
         let mut bytes = BytesMut::with_capacity(payload_len + 1);
         bytes.put_u8(0);
         Self { ecn: false, bytes }
     }
 
+    fn check(&self) -> Result<()> {
+        if self.bytes.len() < 1 {
+            return Err(Error::new(ErrorKind::Other, "invalid packet"));
+        }
+        Ok(())
+    }
+
+    fn payload(&self) -> &[u8] {
+        &self.bytes[1..]
+    }
+
+    fn payload_mut(&mut self) -> &mut [u8] {
+        &mut self.bytes[1..]
+    }
+
+    fn debug(&self, ds: &mut std::fmt::DebugStruct) {
+        ds.field("ecn", &self.ecn());
+        ds.field("channel", &self.channel());
+    }
+}
+
+impl DtpPacket {
     pub(crate) fn uninitialized() -> Self {
         let bytes = BytesMut::with_capacity(MAX_PACKET_LEN);
         Self { ecn: false, bytes }
@@ -52,22 +75,35 @@ impl Packet {
         self.bytes[0] = channel;
     }
 
-    /// Returns the payload of the packet.
-    pub fn payload(&self) -> &[u8] {
-        &self.bytes[1..]
-    }
-
-    /// Returns the mutable payload of the packet.
-    pub fn payload_mut(&mut self) -> &mut [u8] {
-        &mut self.bytes[1..]
-    }
-
     pub(crate) fn bytes(&self) -> &[u8] {
         &self.bytes
     }
 }
 
-impl BufMut for Packet {
+impl std::fmt::Debug for DtpPacket {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let mut ds = fmt.debug_struct("Packet");
+        self.debug(&mut ds);
+        ds.field("payload", &self.payload().len());
+        ds.finish()
+    }
+}
+
+impl From<&[u8]> for DtpPacket {
+    fn from(payload: &[u8]) -> Self {
+        let mut packet = Self::new(payload.len());
+        packet.put(payload);
+        packet
+    }
+}
+
+impl From<&str> for DtpPacket {
+    fn from(payload: &str) -> Self {
+        Self::from(payload.as_bytes())
+    }
+}
+
+impl BufMut for DtpPacket {
     fn remaining_mut(&self) -> usize {
         self.bytes.remaining_mut()
     }
@@ -78,29 +114,5 @@ impl BufMut for Packet {
 
     unsafe fn bytes_mut(&mut self) -> &mut [u8] {
         self.bytes.bytes_mut()
-    }
-}
-
-impl From<&[u8]> for Packet {
-    fn from(payload: &[u8]) -> Self {
-        let mut packet = Packet::new(payload.len());
-        packet.put(payload);
-        packet
-    }
-}
-
-impl From<&str> for Packet {
-    fn from(payload: &str) -> Self {
-        Self::from(payload.as_bytes())
-    }
-}
-
-impl std::fmt::Debug for Packet {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        f.debug_struct("Packet")
-            .field("ecn", &self.ecn())
-            .field("channel", &self.channel())
-            .field("payload", &self.payload().len())
-            .finish()
     }
 }
