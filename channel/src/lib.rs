@@ -106,7 +106,7 @@ impl Channel for Loopback {
 #[macro_export]
 macro_rules! derive_packet {
     ($packet:ident) => {
-        impl<P: BasePacket> Packet<P> for $packet<P> {
+        impl<P: BasePacket> channel::Packet<P> for $packet<P> {
             fn parse(packet: P) -> Result<Self> {
                 let packet = Self(packet);
                 packet.check()?;
@@ -141,7 +141,7 @@ macro_rules! derive_packet {
             }
         }
 
-        impl<P: BasePacket> BufMut for $packet<P> {
+        impl<P: BasePacket> bytes::BufMut for $packet<P> {
             fn remaining_mut(&self) -> usize {
                 self.0.remaining_mut()
             }

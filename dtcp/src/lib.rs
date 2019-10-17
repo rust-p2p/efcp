@@ -67,8 +67,7 @@ mod packet;
 
 pub use crate::packet::{DtcpPacket, DtcpType};
 use async_trait::async_trait;
-use channel::Channel;
-use dtp::Packet;
+use channel::{Channel, Packet};
 use std::io::Result;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::Mutex;
@@ -140,16 +139,13 @@ impl DtcpBuilder {
     }
 
     /// Wrapps a dtp channel in a dtcp channel.
-    pub fn build_channel<T>(&self, channel: T) -> DtcpChannel
-    where
-        T: Channel<Packet = Packet> + Send + Sync + 'static,
-    {
+    pub fn build_channel<C: Channel>(&self, channel: C) -> DtcpChannel<C> {
         let dx = 2 * self.mpl + self.ack;
         let dt = (self.max_retries + 1) as u32 * dx;
         let sit = 2 * dt;
         let rit = 3 * dt;
         DtcpChannel {
-            channel: Box::new(channel),
+            channel,
             set_drf: AtomicBool::new(true),
             seq_num: AtomicU16::new(0),
             sit: Mutex::new(Timer::new(sit)),
@@ -159,8 +155,8 @@ impl DtcpBuilder {
 }
 
 /// Dtcp channel.
-pub struct DtcpChannel {
-    channel: Box<dyn Channel<Packet = Packet> + Send + Sync>,
+pub struct DtcpChannel<C> {
+    channel: C,
     set_drf: AtomicBool,
     seq_num: AtomicU16,
     sit: Mutex<Timer>,
@@ -168,8 +164,8 @@ pub struct DtcpChannel {
 }
 
 #[async_trait]
-impl Channel for DtcpChannel {
-    type Packet = DtcpPacket;
+impl<C: Channel> Channel for DtcpChannel<C> {
+    type Packet = DtcpPacket<C::Packet>;
 
     async fn send(&self, mut packet: Self::Packet) -> Result<()> {
         let expired = self.sit.lock().unwrap().stop();
@@ -196,27 +192,36 @@ impl Channel for DtcpChannel {
 mod tests {
     use super::*;
     use async_std::task;
-    use dtp::DtpSocket;
-    use test_channel::LossyChannel;
+    use channel::BasePacket;
+    use dtp::{DtpChannel, DtpSocket};
+    use test_channel::{LossyChannel, LossyChannelBuilder};
 
-    fn setup_mock(dtcp: DtcpBuilder, px: f64, pq: f64) -> (DtcpChannel, DtcpChannel) {
-        let (a, b) = LossyChannel::new(px, pq).split();
+    fn setup_mock(
+        dtcp: DtcpBuilder,
+        px: f64,
+        pq: f64,
+    ) -> (DtcpChannel<LossyChannel>, DtcpChannel<LossyChannel>) {
+        let (a, b) = LossyChannelBuilder::new(px, pq).split();
         let a = dtcp.build_channel(a);
         let b = dtcp.build_channel(b);
         (a, b)
     }
 
-    fn setup_dtp(dtcp: DtcpBuilder) -> (DtcpChannel, DtcpChannel) {
+    fn setup_dtp(dtcp: DtcpBuilder) -> (DtcpChannel<DtpChannel>, DtcpChannel<DtpChannel>) {
         task::block_on(async {
-            let s1 = DtpSocket::bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
-            let s2 = DtpSocket::bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
+            let s1 = DtpSocket::bind("127.0.0.1:0".parse().unwrap())
+                .await
+                .unwrap();
+            let s2 = DtpSocket::bind("127.0.0.1:0".parse().unwrap())
+                .await
+                .unwrap();
             let a = dtcp.build_channel(s1.outgoing(s2.local_addr().unwrap(), 0).unwrap());
             let b = dtcp.build_channel(s2.outgoing(s1.local_addr().unwrap(), 0).unwrap());
             (a, b)
         })
     }
 
-    async fn single_packet(a: DtcpChannel, b: DtcpChannel) -> Result<()> {
+    async fn single_packet<C: Channel>(a: DtcpChannel<C>, b: DtcpChannel<C>) -> Result<()> {
         a.send("ping".into()).await?;
         let packet = b.recv().await?;
         assert_eq!(packet.payload(), b"ping");

@@ -1,7 +1,7 @@
 //! Defines the DTCP packet format.
 use byteorder::{BigEndian, ByteOrder};
 use bytes::BufMut;
-use dtp::Packet;
+use channel::{derive_packet, BasePacket};
 use std::io::{Error, ErrorKind, Result};
 
 /// Type of PDU.
@@ -21,33 +21,44 @@ pub enum DtcpType {
 ///   type: u8
 ///   sequence_number: u16
 #[derive(Clone)]
-pub struct DtcpPacket(Packet);
+pub struct DtcpPacket<P>(P);
 
-impl DtcpPacket {
-    /// Creates a new dtcp packet that fits the payload.
-    pub fn new(payload_len: usize) -> Self {
-        let mut packet = Packet::new(payload_len + 3);
+impl<P: BasePacket> BasePacket for DtcpPacket<P> {
+    fn new(payload_len: usize) -> Self {
+        let mut packet = P::new(payload_len + 3);
         packet.put_u8(0);
         packet.put_u16_be(0);
         Self(packet)
     }
 
-    /// Parses a packet.
-    pub fn parse(packet: Packet) -> Result<Self> {
-        if packet.payload().len() < 3 {
-            return Err(Self::invalid());
+    fn check(&self) -> Result<()> {
+        if self.0.payload().len() < 3 {
+            return Err(Error::new(ErrorKind::Other, "invalid dtcp packet"));
         }
-        let packet = Self(packet);
-        if packet.raw_type() >= 2 {
-            return Err(Self::invalid());
+        if self.raw_type() >= 2 {
+            return Err(Error::new(ErrorKind::Other, "invalid dtcp packet type"));
         }
-        Ok(packet)
+        Ok(())
     }
 
-    fn invalid() -> Error {
-        Error::new(ErrorKind::Other, "invalid dtcp packet")
+    fn payload(&self) -> &[u8] {
+        &self.0.payload()[3..]
     }
 
+    fn payload_mut(&mut self) -> &mut [u8] {
+        &mut self.0.payload_mut()[3..]
+    }
+
+    fn debug(&self, ds: &mut std::fmt::DebugStruct) {
+        self.0.debug(ds);
+        ds.field("type", &self.ty());
+        ds.field("seq_num", &self.seq_num());
+    }
+}
+
+derive_packet!(DtcpPacket);
+
+impl<P: BasePacket> DtcpPacket<P> {
     fn raw_type(&self) -> u8 {
         self.0.payload()[0] >> 4
     }
@@ -86,60 +97,5 @@ impl DtcpPacket {
 
     pub(crate) fn set_seq_num(&mut self, seq_num: u16) {
         BigEndian::write_u16(&mut self.0.payload_mut()[1..3], seq_num)
-    }
-
-    /// Returns the payload of a packet.
-    pub fn payload(&self) -> &[u8] {
-        &self.0.payload()[3..]
-    }
-
-    /// Returns the mutable payload of a packet.
-    pub fn payload_mut(&mut self) -> &mut [u8] {
-        &mut self.0.payload_mut()[3..]
-    }
-
-    /// Returns a packet.
-    pub fn into_packet(self) -> Packet {
-        self.0
-    }
-}
-
-impl BufMut for DtcpPacket {
-    fn remaining_mut(&self) -> usize {
-        self.0.remaining_mut()
-    }
-
-    unsafe fn advance_mut(&mut self, by: usize) {
-        self.0.advance_mut(by)
-    }
-
-    unsafe fn bytes_mut(&mut self) -> &mut [u8] {
-        self.0.bytes_mut()
-    }
-}
-
-impl From<&[u8]> for DtcpPacket {
-    fn from(payload: &[u8]) -> Self {
-        let mut packet = DtcpPacket::new(payload.len());
-        packet.put(payload);
-        packet
-    }
-}
-
-impl From<&str> for DtcpPacket {
-    fn from(payload: &str) -> Self {
-        Self::from(payload.as_bytes())
-    }
-}
-
-impl std::fmt::Debug for DtcpPacket {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        f.debug_struct("DtcpPacket")
-            .field("ecn", &self.0.ecn())
-            .field("channel", &self.0.channel())
-            .field("type", &self.ty())
-            .field("seq_num", &self.seq_num())
-            .field("payload", &self.payload().len())
-            .finish()
     }
 }
