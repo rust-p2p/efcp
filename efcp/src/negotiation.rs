@@ -1,3 +1,5 @@
+use crate::error::HandshakeError;
+
 pub type Protocol = &'static str;
 pub type Protocols = &'static [Protocol];
 
@@ -7,9 +9,6 @@ pub enum Message {
     Accept(&'static str),
     Fail,
 }
-
-#[derive(Debug)]
-pub struct ProtocolError;
 
 pub struct Negotiation {
     protocols: Protocols,
@@ -54,14 +53,14 @@ impl Negotiation {
         self.propose()
     }
 
-    pub fn message(&mut self, msg: Message) -> Result<Option<Message>, ProtocolError> {
+    pub fn message(&mut self, msg: Message) -> Result<Option<Message>, HandshakeError> {
         self.started = true;
         match msg {
             Message::Propose(protocol) => {
                 if self.accepted.is_some() {
-                    return Err(ProtocolError);
+                    return Err(HandshakeError::ProtocolError);
                 }
-                
+
                 if self.supported(protocol) {
                     self.accepted = Some(protocol);
                     self.finished = true;
@@ -76,7 +75,7 @@ impl Negotiation {
                     self.finished = true;
                     Ok(None)
                 } else {
-                    Err(ProtocolError)
+                    Err(HandshakeError::ProtocolError)
                 }
             }
             Message::Fail => {
@@ -110,7 +109,7 @@ mod tests {
         assert_eq!(m2, Message::Accept("/ping/1.0"));
         let m3 = n1.message(m2).unwrap();
         assert_eq!(m3, None);
-        
+
         assert!(n1.is_finished());
         assert!(n2.is_finished());
 
@@ -124,19 +123,19 @@ mod tests {
     fn no_proto_common() {
         let mut n1 = Negotiation::new(&["/ping/1.0"]);
         let mut n2 = Negotiation::new(&["/ping/2.0"]);
-        
+
         let m1 = n1.initiate();
         assert_eq!(m1, Message::Propose("/ping/1.0"));
-        
+
         let m2 = n2.message(m1).unwrap().unwrap();
         assert_eq!(m2, Message::Propose("/ping/2.0"));
-        
+
         let m3 = n1.message(m2).unwrap().unwrap();
         assert_eq!(m3, Message::Fail);
 
         let m4 = n2.message(m3).unwrap();
         assert_eq!(m4, None);
-        
+
         assert!(n1.is_finished());
         assert!(n2.is_finished());
 
@@ -150,19 +149,19 @@ mod tests {
     fn one_proto_common() {
         let mut n1 = Negotiation::new(&["/ping/2.0", "/ping/1.0"]);
         let mut n2 = Negotiation::new(&["/ping/1.0"]);
-        
+
         let m1 = n1.initiate();
         assert_eq!(m1, Message::Propose("/ping/2.0"));
-        
+
         let m2 = n2.message(m1).unwrap().unwrap();
         assert_eq!(m2, Message::Propose("/ping/1.0"));
-        
+
         let m3 = n1.message(m2).unwrap().unwrap();
         assert_eq!(m3, Message::Accept("/ping/1.0"));
 
         let m4 = n2.message(m3).unwrap();
         assert_eq!(m4, None);
-        
+
         assert!(n1.is_finished());
         assert!(n2.is_finished());
 
@@ -176,22 +175,22 @@ mod tests {
     fn both_initiate() {
         let mut n1 = Negotiation::new(&["/ping/2.0", "/ping/1.0"]);
         let mut n2 = Negotiation::new(&["/ping/1.0", "/ping/2.0"]);
-        
+
         let m1 = n1.initiate();
         assert_eq!(m1, Message::Propose("/ping/2.0"));
-        
+
         let m2 = n2.initiate();
         assert_eq!(m2, Message::Propose("/ping/1.0"));
-        
+
         let m3 = n1.message(m2).unwrap().unwrap();
         assert_eq!(m3, Message::Accept("/ping/1.0"));
-        
+
         let m4 = n2.message(m1).unwrap().unwrap();
         assert_eq!(m4, Message::Accept("/ping/2.0"));
 
         let m5 = n1.message(m4).unwrap().unwrap();
         let m6 = n2.message(m3).unwrap().unwrap()
-        
+
         assert!(n1.is_finished());
         assert!(n2.is_finished());
 

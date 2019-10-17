@@ -104,6 +104,7 @@ impl Timer {
 }
 
 /// Builder for dtcp channels.
+#[derive(Clone)]
 pub struct DtcpBuilder {
     mpl: Duration,
     ack: Duration,
@@ -185,6 +186,13 @@ impl<C: Channel> Channel for DtcpChannel<C> {
         let packet = DtcpPacket::parse(packet)?;
         self.rit.lock().unwrap().start();
         Ok(packet)
+    }
+}
+
+impl<C> DtcpChannel<C> {
+    /// Returns the underlying channel.
+    pub fn unwrap(self) -> C {
+        self.channel
     }
 }
 
