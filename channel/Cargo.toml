@@ -6,3 +6,8 @@ edition = "2018"
 
 [dependencies]
 async-trait = "0.1"
+bytes = "0.4"
+
+[dev-dependencies]
+async-std = "0.99"
+byteorder = "1.3"
