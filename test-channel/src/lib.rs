@@ -2,96 +2,90 @@
 #![deny(missing_docs)]
 #![deny(warnings)]
 use async_trait::async_trait;
-use channel::Channel;
-use core::future::Future;
-use core::pin::Pin;
-use core::task::{Context, Poll};
+use bytes::BytesMut;
+use channel::{Channel, Loopback};
 use rand::rngs::OsRng;
 use rand::Rng;
 use std::collections::VecDeque;
 use std::io::Result;
 use std::sync::{Arc, Mutex};
 
-struct SimplexChannel<T> {
+#[derive(Clone)]
+struct LossyLoopback {
     px: f64,
     pq: f64,
-    rx_queue: VecDeque<T>,
-    ch_queue: VecDeque<T>,
+    delayed: Arc<Mutex<VecDeque<BytesMut>>>,
+    loopback: Loopback,
 }
 
-impl<T: Clone> SimplexChannel<T> {
+impl LossyLoopback {
     fn new(px: f64, pq: f64) -> Self {
         Self {
             px,
             pq,
-            rx_queue: VecDeque::new(),
-            ch_queue: VecDeque::new(),
+            delayed: Default::default(),
+            loopback: Default::default(),
         }
-    }
-
-    fn send(&mut self, packet: T) {
-        let fate: f64 = OsRng.gen();
-        if fate < self.px {
-            self.rx_queue.push_back(packet.clone());
-        }
-        if fate < self.pq {
-            self.ch_queue.push_back(packet);
-        }
-    }
-
-    fn recv(&mut self) -> Option<T> {
-        if let Some(packet) = self.rx_queue.pop_front() {
-            return Some(packet);
-        }
-        if let Some(packet) = self.ch_queue.pop_front() {
-            return Some(packet);
-        }
-        None
-    }
-}
-
-/// Duplex communication channel
-pub struct DuplexChannel<T> {
-    rx: Arc<Mutex<SimplexChannel<T>>>,
-    tx: Arc<Mutex<SimplexChannel<T>>>,
-}
-
-struct RecvFuture<'a, T: Clone + Send>(&'a DuplexChannel<T>);
-
-impl<'a, T: Clone + Send> Future for RecvFuture<'a, T> {
-    type Output = Result<T>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
-        if let Some(packet) = self.0.rx.lock().unwrap().recv() {
-            return Poll::Ready(Ok(packet));
-        }
-        cx.waker().clone().wake();
-        Poll::Pending
     }
 }
 
 #[async_trait]
-impl<T: Clone + Send> Channel for DuplexChannel<T> {
-    type Packet = T;
+impl Channel for LossyLoopback {
+    type Packet = BytesMut;
 
     async fn send(&self, packet: Self::Packet) -> Result<()> {
-        Ok(self.tx.lock().unwrap().send(packet))
+        let fate: f64 = OsRng.gen();
+        if fate < self.px {
+            self.loopback.send(packet.clone()).await?;
+        }
+        if fate < self.pq {
+            self.delayed.lock().unwrap().push_back(packet);
+        }
+        Ok(())
     }
 
     async fn recv(&self) -> Result<Self::Packet> {
-        RecvFuture(self).await
+        let packet = self.loopback.recv().await?;
+        loop {
+            let packet = { self.delayed.lock().unwrap().pop_front() };
+            if let Some(packet) = packet {
+                self.loopback.send(packet).await?;
+            } else {
+                break;
+            }
+        }
+        Ok(packet)
     }
 }
 
 /// Lossy channel.
-pub struct LossyChannel<T> {
-    px: f64,
-    pq: f64,
-    rx: SimplexChannel<T>,
-    tx: SimplexChannel<T>,
+pub struct LossyChannel {
+    rx: LossyLoopback,
+    tx: LossyLoopback,
 }
 
-impl<T: Clone> LossyChannel<T> {
+#[async_trait]
+impl Channel for LossyChannel {
+    type Packet = BytesMut;
+
+    async fn send(&self, packet: Self::Packet) -> Result<()> {
+        self.tx.send(packet).await
+    }
+
+    async fn recv(&self) -> Result<Self::Packet> {
+        self.rx.recv().await
+    }
+}
+
+/// Lossy channel builder.
+pub struct LossyChannelBuilder {
+    px: f64,
+    pq: f64,
+    rx: LossyLoopback,
+    tx: LossyLoopback,
+}
+
+impl LossyChannelBuilder {
     /// Creates a new lossy channel.
     ///
     /// The px parameter defines the probability of a packet getting
@@ -109,20 +103,21 @@ impl<T: Clone> LossyChannel<T> {
         Self {
             px,
             pq,
-            rx: SimplexChannel::new(px, pq),
-            tx: SimplexChannel::new(px, pq),
+            rx: LossyLoopback::new(px, pq),
+            tx: LossyLoopback::new(px, pq),
         }
     }
 
     /// Splits the channel into two duplex channels.
-    pub fn split(self) -> (DuplexChannel<T>, DuplexChannel<T>) {
-        let rx = Arc::new(Mutex::new(self.rx));
-        let tx = Arc::new(Mutex::new(self.tx));
-        let ch1 = DuplexChannel {
-            rx: rx.clone(),
-            tx: tx.clone(),
+    pub fn split(self) -> (LossyChannel, LossyChannel) {
+        let ch1 = LossyChannel {
+            rx: self.rx.clone(),
+            tx: self.tx.clone(),
         };
-        let ch2 = DuplexChannel { rx: tx, tx: rx };
+        let ch2 = LossyChannel {
+            rx: self.tx,
+            tx: self.rx,
+        };
         (ch1, ch2)
     }
 }
@@ -139,7 +134,7 @@ pub enum Tx {
     Drop,
 }
 
-impl<T> LossyChannel<T> {
+impl LossyChannelBuilder {
     /// Returns the probability of an error condition occuring.
     pub fn probability(&self, cond: Tx) -> f64 {
         match cond {
@@ -151,7 +146,7 @@ impl<T> LossyChannel<T> {
     }
 }
 
-impl<T> std::fmt::Display for LossyChannel<T> {
+impl std::fmt::Display for LossyChannelBuilder {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         writeln!(f, "p(transmission) = {}", self.px)?;
         writeln!(f, "p(queue) = {}", self.pq)?;
@@ -167,37 +162,41 @@ impl<T> std::fmt::Display for LossyChannel<T> {
 mod tests {
     use super::*;
     use async_std::task;
+    use channel::BasePacket;
 
-    #[test]
-    fn simplex() {
+    async fn lossy_loopback() -> Result<()> {
         // Reliable channel
-        let mut ch = SimplexChannel::<u32>::new(1.0, 0.0);
-        ch.send(42);
-        assert_eq!(ch.recv(), Some(42));
-        assert_eq!(ch.recv(), None);
+        let ch = LossyLoopback::new(1.0, 0.0);
+        ch.send("ping".into()).await?;
+        assert_eq!(ch.recv().await?.payload(), b"ping");
 
         // Network partition
-        let mut ch = SimplexChannel::<u32>::new(0.0, 0.0);
-        ch.send(42);
-        assert_eq!(ch.recv(), None);
-        assert_eq!(ch.recv(), None);
+        let ch = LossyLoopback::new(0.0, 0.0);
+        ch.send("ping".into()).await?;
 
         // Every packet is duplicate
-        let mut ch = SimplexChannel::<u32>::new(1.0, 1.0);
-        ch.send(42);
-        assert_eq!(ch.recv(), Some(42));
-        assert_eq!(ch.recv(), Some(42));
-    }
+        let ch = LossyLoopback::new(1.0, 1.0);
+        ch.send("ping".into()).await?;
+        assert_eq!(ch.recv().await?.payload(), b"ping");
+        assert_eq!(ch.recv().await?.payload(), b"ping");
 
-    async fn lossy() -> Result<()> {
-        let (a, b) = LossyChannel::<u32>::new(1.0, 0.0).split();
-        a.send(42).await?;
-        assert_eq!(b.recv().await?, 42);
         Ok(())
     }
 
     #[test]
-    fn test_lossy() {
-        task::block_on(lossy()).unwrap();
+    fn test_lossy_loopback() {
+        task::block_on(lossy_loopback()).unwrap();
+    }
+
+    async fn lossy_channel() -> Result<()> {
+        let (a, b) = LossyChannelBuilder::new(1.0, 0.0).split();
+        a.send("ping".into()).await?;
+        assert_eq!(b.recv().await?.payload(), b"ping");
+        Ok(())
+    }
+
+    #[test]
+    fn test_lossy_channel() {
+        task::block_on(lossy_channel()).unwrap();
     }
 }

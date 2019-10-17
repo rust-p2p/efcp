@@ -6,8 +6,8 @@ edition = "2018"
 
 [dependencies]
 async-trait = "0.1"
+bytes = "0.4"
 channel = { path = "../channel" }
-dtp = { path = "../dtp" }
 rand = "0.7.2"
 
 [dev-dependencies]
