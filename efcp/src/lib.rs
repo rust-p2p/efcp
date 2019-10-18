@@ -20,13 +20,14 @@
 //! signature extension spec. The client identity is useful for performing
 //! access control operations.
 //!
+//! ```
 //! XK1sig
 //!   <- s
 //!   ...
 //!   -> e
 //!   <- e ee sig
 //!   -> s sig
-//!
+//! ```
 //!
 //! ## Observed address and NAT traversal
 //! In P2P networks knowledge of the external address port tuple is neccessary
@@ -50,6 +51,8 @@
 //! The application protocol has a unique protocol identifier, which is used
 //! to negotiate the application protocol using the generic protocol negotiation
 //! mechanism.
+#![deny(missing_docs)]
+#![deny(warnings)]
 mod error;
 mod negotiation;
 mod packet;
@@ -62,20 +65,81 @@ use crate::secure::{DiscoChannel, DiscoPacket};
 use async_std::prelude::*;
 use async_trait::async_trait;
 use channel::{BasePacket, Channel};
-use disco::ed25519::{Keypair, PublicKey};
+pub use disco::ed25519::{Keypair, PublicKey};
 use disco::SessionBuilder;
 use dtcp::{DtcpBuilder, DtcpChannel, DtcpPacket};
 use dtp::{DtpChannel, DtpPacket, DtpSocket};
 use std::io::Error;
 use std::net::SocketAddr;
 
+/// The information required to dial a peer.
 pub struct Dial {
+    /// Peer's external address.
     pub peer_addr: SocketAddr,
+    /// DTP channel id.
     pub channel: u8,
+    /// Peer's public key.
     pub remote_public: PublicKey,
+    /// Acceptable application protocols.
     pub protocols: Protocols,
 }
 
+/// An EFCP socket.
+///
+/// Wraps a `DtpSocket` with a secure reliable transport.
+///
+/// ## Examples
+///
+/// ```no_run
+/// # use async_std::prelude::*;
+/// # fn main() -> Result<(), failure::Error> { async_std::task::block_on(async {
+/// #
+/// use channel::{BasePacket, Channel};
+/// use efcp::{EfcpSocket, Keypair};
+/// use rand::rngs::OsRng;
+///
+/// let identity = Keypair::generate(&mut OsRng);
+/// let socket = EfcpSocket::bind(
+///     "0.0.0.0:0".parse()?,
+///     identity,
+///     &["/ping/1.0"],
+/// ).await?;
+/// while let Some(channel) = socket.incoming().await {
+///     let channel = channel?;
+///     if channel.recv().await?.payload() == b"ping" {
+///         channel.send("pong".into()).await?;
+///     }
+/// }
+/// #
+/// # Ok(()) }) }
+/// ```
+/// ```no_run
+/// # use async_std::prelude::*;
+/// # fn main() -> Result<(), failure::Error> { async_std::task::block_on(async {
+/// # let remote_public = Keypair::generate(&mut OsRng).public;
+/// #
+/// use channel::{BasePacket, Channel};
+/// use efcp::{Dial, EfcpSocket, Keypair};
+/// use rand::rngs::OsRng;
+///
+/// let identity = Keypair::generate(&mut OsRng);
+/// let socket = EfcpSocket::bind(
+///     "0.0.0.0:0".parse()?,
+///     identity,
+///     &["/ping/1.0"],
+/// ).await?;
+/// let dial = Dial {
+///     peer_addr: "127.0.0.1:8000".parse()?,
+///     channel: 0,
+///     remote_public,
+///     protocols: &["/ping/1.0"],
+/// };
+/// let channel = socket.dial(&dial).await?;
+/// channel.send("ping".into());
+/// channel.recv().await?;
+/// #
+/// # Ok(()) }) }
+/// ```
 pub struct EfcpSocket {
     dtp: DtpSocket,
     identity: Keypair,
@@ -83,6 +147,7 @@ pub struct EfcpSocket {
 }
 
 impl EfcpSocket {
+    /// Creates a new `EfcpSocket`.
     pub async fn bind(
         addr: SocketAddr,
         identity: Keypair,
@@ -96,6 +161,7 @@ impl EfcpSocket {
         })
     }
 
+    /// Returns a stream of incoming EFCP connections.
     pub async fn incoming(&self) -> Option<Result<EfcpChannel, HandshakeError>> {
         match self.dtp.incoming().next().await {
             Some(Ok(channel)) => {
@@ -110,24 +176,29 @@ impl EfcpSocket {
         }
     }
 
+    /// Dials a peer.
     pub async fn dial(&self, dial: &Dial) -> Result<EfcpChannel, HandshakeError> {
         let channel = self.dtp.outgoing(dial.peer_addr, dial.channel)?;
         EfcpChannel::initiator(channel, &self.identity, self.protocols, dial.remote_public).await
     }
 
+    /// Returns the local address that this socket is bound to.
     pub fn local_addr(&self) -> Result<SocketAddr, Error> {
         self.dtp.local_addr()
     }
 
+    /// Returns the identity associated with this socket.
     pub fn identity(&self) -> PublicKey {
         self.identity.public
     }
 
+    /// Returns the list of protocol supported on this socket.
     pub fn protocols(&self) -> Protocols {
         self.protocols
     }
 }
 
+/// A EFCP channel between a local and a remote socket.
 pub struct EfcpChannel {
     channel: DtcpChannel<DiscoChannel<DtpChannel>>,
     remote: PublicKey,
@@ -291,26 +362,32 @@ impl EfcpChannel {
         })
     }
 
+    /// Returns the local address that this bound to.
     pub fn local_addr(&self) -> Result<SocketAddr, Error> {
         self.channel.local_addr()
     }
 
+    /// Returns the remote address that this channel is connected to.
     pub fn peer_addr(&self) -> &SocketAddr {
         self.channel.peer_addr()
     }
 
+    /// Returns the external address that the remote observed.
     pub fn external_addr(&self) -> Option<&SocketAddr> {
         self.external_addr.as_ref()
     }
 
+    /// Returns the channel id.
     pub fn channel(&self) -> u8 {
         self.channel.channel()
     }
 
+    /// Returns the public key of the peer that this channel is connected to.
     pub fn peer_identity(&self) -> PublicKey {
         self.remote
     }
 
+    /// Returns the protocol that this channel has negotiated.
     pub fn protocol(&self) -> Protocol {
         self.protocol
     }

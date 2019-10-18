@@ -60,6 +60,7 @@ use std::net::SocketAddr;
 /// }
 /// #
 /// # Ok(()) }) }
+/// ```
 pub struct DtpSocket {
     socket: OuterDtpSocket,
 }
@@ -81,6 +82,7 @@ impl DtpSocket {
     /// let socket = DtpSocket::bind("127.0.0.1:8001".parse()?).await?;
     /// #
     /// # Ok(()) }) }
+    /// ```
     pub async fn bind(addr: SocketAddr) -> Result<Self> {
         let socket = OuterDtpSocket::bind(addr).await?;
         Ok(Self { socket })
@@ -107,6 +109,7 @@ impl DtpSocket {
     /// }
     /// #
     /// # Ok(()) }) }
+    /// ```
     pub fn incoming(&self) -> Incoming {
         Incoming(self)
     }
@@ -150,6 +153,7 @@ impl DtpSocket {
     /// socket.local_addr()?;
     /// #
     /// # Ok(()) }) }
+    /// ```
     pub fn local_addr(&self) -> Result<SocketAddr> {
         self.socket.local_addr()
     }
@@ -212,13 +216,14 @@ impl<'a> Stream for Incoming<'a> {
 /// let response = channel.recv().await?;
 /// #
 /// # Ok(()) }) }
+/// ```
 pub struct DtpChannel {
     channel: Channel,
     socket: OuterDtpSocket,
 }
 
 impl DtpChannel {
-    /// Returns the local address that this channel is connected to.
+    /// Returns the local address that this channel is bound to.
     ///
     /// ## Examples
     ///
@@ -231,6 +236,7 @@ impl DtpChannel {
     /// channel.local_addr()?;
     /// #
     /// # Ok(()) }) }
+    /// ```
     pub fn local_addr(&self) -> Result<SocketAddr> {
         self.socket.local_addr()
     }
@@ -248,6 +254,7 @@ impl DtpChannel {
     /// channel.peer_addr();
     /// #
     /// # Ok(()) }) }
+    /// ```
     pub fn peer_addr(&self) -> &SocketAddr {
         &self.channel.peer_addr
     }
@@ -272,6 +279,7 @@ impl DtpChannel {
     /// }
     /// #
     /// # Ok(()) }) }
+    /// ```
     pub fn channel(&self) -> u8 {
         self.channel.channel_id
     }
@@ -289,6 +297,7 @@ impl DtpChannel {
     /// let response = channel.recv().await?;
     /// #
     /// # Ok(()) }) }
+    /// ```
     pub fn recv(&self) -> RecvFuture {
         RecvFuture(self)
     }
@@ -307,6 +316,7 @@ impl DtpChannel {
     /// channel.send("ping".into()).await?;
     /// #
     /// # Ok(()) }) }
+    /// ```
     pub fn send(&self, packet: DtpPacket) -> SendFuture {
         SendFuture {
             channel: self,
