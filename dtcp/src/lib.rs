@@ -196,6 +196,14 @@ impl<C> DtcpChannel<C> {
     }
 }
 
+impl<C> core::ops::Deref for DtcpChannel<C> {
+    type Target = C;
+
+    fn deref(&self) -> &Self::Target {
+        &self.channel
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

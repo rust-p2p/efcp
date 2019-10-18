@@ -106,7 +106,7 @@ impl Channel for Loopback {
 #[macro_export]
 macro_rules! derive_packet {
     ($packet:ident) => {
-        impl<P: BasePacket> channel::Packet<P> for $packet<P> {
+        impl<P: BasePacket> $crate::Packet<P> for $packet<P> {
             fn parse(packet: P) -> Result<Self> {
                 let packet = Self(packet);
                 packet.check()?;
@@ -199,6 +199,12 @@ mod tests {
 
     struct DtpChannel<C>(C);
 
+    impl<C> DtpChannel<C> {
+        fn channel(&self) -> u8 {
+            0
+        }
+    }
+
     #[async_trait]
     impl<C: Channel> Channel for DtpChannel<C> {
         type Packet = DtpPacket<C::Packet>;
@@ -266,6 +272,14 @@ mod tests {
         }
     }
 
+    impl<C> core::ops::Deref for DiscoChannel<C> {
+        type Target = C;
+
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+
     #[test]
     fn test_channels() {
         task::block_on(async {
@@ -273,6 +287,7 @@ mod tests {
             ch.send("ping".into()).await.unwrap();
             let msg = ch.recv().await.unwrap();
             assert_eq!(msg.payload(), b"ping");
+            assert_eq!(ch.channel(), 0);
         });
     }
 }
