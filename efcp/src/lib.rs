@@ -78,8 +78,7 @@ pub struct Dial {
 
 pub struct EfcpSocket {
     dtp: DtpSocket,
-    dtcp: DtcpBuilder,
-    session: SessionBuilder,
+    identity: Keypair,
     protocols: Protocols,
 }
 
@@ -90,28 +89,20 @@ impl EfcpSocket {
         protocols: Protocols,
     ) -> Result<Self, Error> {
         let dtp = DtpSocket::bind(addr).await?;
-        let dtcp = DtcpBuilder::new();
-        let session = SessionBuilder::new("XK1sig").secret(identity);
         Ok(Self {
             dtp,
-            dtcp,
-            session,
+            identity,
             protocols,
         })
     }
 
     pub async fn incoming(&self) -> Option<Result<EfcpChannel, HandshakeError>> {
         match self.dtp.incoming().next().await {
-            Some(Ok(dtp)) => {
-                let peer_addr = Some(dtp.peer_addr().clone());
-                let efcp = EfcpChannel::responder(
-                    dtp,
-                    self.dtcp.clone(),
-                    self.session.clone(),
-                    self.protocols,
-                    peer_addr,
-                )
-                .await;
+            Some(Ok(channel)) => {
+                let peer_addr = channel.peer_addr().clone();
+                let efcp =
+                    EfcpChannel::responder(channel, &self.identity, self.protocols, peer_addr)
+                        .await;
                 Some(efcp)
             }
             Some(Err(err)) => Some(Err(err.into())),
@@ -120,16 +111,20 @@ impl EfcpSocket {
     }
 
     pub async fn dial(&self, dial: &Dial) -> Result<EfcpChannel, HandshakeError> {
-        // TODO channel allocation
         let channel = self.dtp.outgoing(dial.peer_addr, dial.channel)?;
-        self.session.remote_public(dial.remote_public);
-        EfcpChannel::initiator(
-            channel,
-            self.dtcp.clone(),
-            self.session.clone(),
-            self.protocols,
-        )
-        .await
+        EfcpChannel::initiator(channel, &self.identity, self.protocols, dial.remote_public).await
+    }
+
+    pub fn local_addr(&self) -> Result<SocketAddr, Error> {
+        self.dtp.local_addr()
+    }
+
+    pub fn identity(&self) -> PublicKey {
+        self.identity.public
+    }
+
+    pub fn protocols(&self) -> Protocols {
+        self.protocols
     }
 }
 
@@ -142,35 +137,41 @@ pub struct EfcpChannel {
 
 impl EfcpChannel {
     async fn initiator(
-        dtp: DtpChannel,
-        dtcp: DtcpBuilder,
-        session: SessionBuilder,
+        channel: DtpChannel,
+        identity: &Keypair,
         protocols: Protocols,
+        remote_public: PublicKey,
     ) -> Result<Self, HandshakeError> {
-        let channel = dtcp.build_channel(dtp);
-        let mut session = session.build_initiator();
+        let dtcp = DtcpBuilder::new();
+        let channel = dtcp.build_channel(channel);
+        let mut session = SessionBuilder::new("XK1sig")
+            .secret(identity)
+            .remote_public(remote_public)
+            .build_initiator();
         let mut negotiate = Negotiation::new(protocols);
         let mut external_addr = None;
         let mut next_neg = Some(negotiate.initiate());
-        loop {
-            let msg = HandshakePacket::new(next_neg, None);
-            let ct = session.write_message(&msg.to_bytes());
-            let dtcp = DtcpPacket::from(&ct[..]);
-            channel.send(dtcp).await?;
 
-            let dtcp = channel.recv().await?;
-            let bytes = session.read_message(dtcp.payload())?;
-            let msg = HandshakePacket::from_bytes(&bytes)?;
+        loop {
+            let msg = HandshakePacket::new(next_neg.take(), None);
+            let ct = session.write_message(&msg.to_bytes()?);
+            channel.send(ct[..].into()).await?;
+
+            if session.is_handshake_finished() {
+                break;
+            }
+
+            let packet = channel.recv().await?;
+            let pt = session.read_message(packet.payload())?;
+            let mut msg = HandshakePacket::from_bytes(&pt)?;
             if let Some(addr) = msg.external_addr() {
                 external_addr = Some(addr);
             }
-            if let Some(msg) = msg.negotiate() {
-                next_neg = negotiate.message(msg)?;
-            }
-
-            if session.is_handshake_finished() && negotiate.is_finished() {
-                break;
-            }
+            next_neg = msg
+                .negotiate()
+                .as_ref()
+                .map(|msg| negotiate.message(msg))
+                .unwrap_or(Ok(None))?;
         }
 
         let remote = *session
@@ -179,19 +180,34 @@ impl EfcpChannel {
             .ed25519();
         let session = session.into_stateless_transport_mode();
 
-        let protocol = if let Some(protocol) = negotiate.into_protocol() {
-            protocol
-        } else {
-            return Err(HandshakeError::Negotiation);
-        };
+        let channel = channel.unwrap();
+        let channel = DiscoChannel::new(channel, session);
+        let channel = dtcp.build_channel(channel);
 
         if external_addr.is_none() {
             return Err(HandshakeError::ExternalAddr);
         }
 
-        let channel = channel.unwrap();
-        let channel = DiscoChannel::new(channel, session);
-        let channel = dtcp.build_channel(channel);
+        while !negotiate.is_finished() {
+            let packet = channel.recv().await?;
+            let mut msg = HandshakePacket::from_bytes(packet.payload())?;
+            next_neg = msg
+                .negotiate()
+                .as_ref()
+                .map(|msg| negotiate.message(msg))
+                .unwrap_or(Ok(None))?;
+
+            if next_neg.is_none() {
+                break;
+            }
+
+            let msg = HandshakePacket::new(next_neg.take(), None).to_bytes()?;
+            channel.send(msg[..].into()).await?;
+        }
+        let protocol = negotiate
+            .into_protocol()
+            .map(|p| Ok(p))
+            .unwrap_or(Err(HandshakeError::Negotiation))?;
 
         Ok(Self {
             channel,
@@ -202,34 +218,38 @@ impl EfcpChannel {
     }
 
     async fn responder(
-        dtp: DtpChannel,
-        dtcp: DtcpBuilder,
-        session: SessionBuilder,
+        channel: DtpChannel,
+        identity: &Keypair,
         protocols: Protocols,
-        mut external_addr: Option<SocketAddr>,
+        remote_addr: SocketAddr,
     ) -> Result<Self, HandshakeError> {
-        let channel = dtcp.build_channel(dtp);
-        let session = session.build_responder();
-        let negotiate = Negotiation::new(protocols);
+        let dtcp = DtcpBuilder::new();
+        let channel = dtcp.build_channel(channel);
+        let mut session = SessionBuilder::new("XK1sig")
+            .secret(identity)
+            .build_responder();
+        let mut negotiate = Negotiation::new(protocols);
+        let mut external_addr = Some(remote_addr);
+        let mut next_neg;
 
         loop {
             let dtcp = channel.recv().await?;
             let bytes = session.read_message(dtcp.payload())?;
-            let msg = HandshakePacket::from_bytes(&bytes[..])?;
-            let next_neg = if let Some(msg) = msg.negotiate() {
-                negotiate.message(msg)?
-            } else {
-                None
-            };
+            let mut msg = HandshakePacket::from_bytes(&bytes[..])?;
+            next_neg = msg
+                .negotiate()
+                .as_ref()
+                .map(|msg| negotiate.message(msg))
+                .unwrap_or(Ok(None))?;
 
-            let msg = HandshakePacket::new(next_neg, external_addr.take());
-            let ct = session.write_message(&msg.to_bytes());
-            let dtcp = DtcpPacket::from(&ct[..]);
-            channel.send(dtcp).await?;
-
-            if session.is_handshake_finished() && negotiate.is_finished() {
+            if session.is_handshake_finished() {
                 break;
             }
+
+            let msg = HandshakePacket::new(next_neg, external_addr.take());
+            let ct = session.write_message(&msg.to_bytes()?);
+            let dtcp = DtcpPacket::from(&ct[..]);
+            channel.send(dtcp).await?;
         }
 
         let remote = *session
@@ -238,15 +258,30 @@ impl EfcpChannel {
             .ed25519();
         let session = session.into_stateless_transport_mode();
 
-        let protocol = if let Some(protocol) = negotiate.into_protocol() {
-            protocol
-        } else {
-            return Err(HandshakeError::Negotiation);
-        };
-
         let channel = channel.unwrap();
         let channel = DiscoChannel::new(channel, session);
         let channel = dtcp.build_channel(channel);
+
+        while let Some(msg) = next_neg.take() {
+            let msg = HandshakePacket::new(Some(msg), external_addr.take()).to_bytes()?;
+            channel.send(msg[..].into()).await?;
+
+            if negotiate.is_finished() {
+                break;
+            }
+
+            let packet = channel.recv().await?;
+            let mut msg = HandshakePacket::from_bytes(packet.payload())?;
+            next_neg = msg
+                .negotiate()
+                .as_ref()
+                .map(|msg| negotiate.message(msg))
+                .unwrap_or(Ok(None))?;
+        }
+        let protocol = negotiate
+            .into_protocol()
+            .map(|p| Ok(p))
+            .unwrap_or(Err(HandshakeError::Negotiation))?;
 
         Ok(Self {
             channel,
@@ -256,16 +291,28 @@ impl EfcpChannel {
         })
     }
 
-    pub fn peer_id(&self) -> PublicKey {
+    pub fn local_addr(&self) -> Result<SocketAddr, Error> {
+        self.channel.local_addr()
+    }
+
+    pub fn peer_addr(&self) -> &SocketAddr {
+        self.channel.peer_addr()
+    }
+
+    pub fn external_addr(&self) -> Option<&SocketAddr> {
+        self.external_addr.as_ref()
+    }
+
+    pub fn channel(&self) -> u8 {
+        self.channel.channel()
+    }
+
+    pub fn peer_identity(&self) -> PublicKey {
         self.remote
     }
 
     pub fn protocol(&self) -> Protocol {
         self.protocol
-    }
-
-    pub fn external_addr(&self) -> Option<&SocketAddr> {
-        self.external_addr.as_ref()
     }
 }
 
@@ -284,9 +331,60 @@ impl Channel for EfcpChannel {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use async_std::task;
+    use futures::join;
+    use rand::rngs::OsRng;
+
+    async fn efcp() -> Result<(), HandshakeError> {
+        let addr = "127.0.0.1:0".parse().unwrap();
+        let protocols = &["/ping/1.0"];
+
+        let identity1 = Keypair::generate(&mut OsRng);
+        let socket1 = EfcpSocket::bind(addr, identity1, &["/ping/1.0"]).await?;
+
+        let identity2 = Keypair::generate(&mut OsRng);
+        let socket2 = EfcpSocket::bind(addr, identity2, &["/ping/1.0"]).await?;
+        let external_addr = socket2.local_addr()?;
+
+        /*let dial1 = Dial {
+            peer_addr: socket2.local_addr()?,
+            channel: 0,
+            remote_public: identity2.public,
+            protocols,
+        };
+        let channel1 = socket1.dial(dial1)?;*/
+
+        let dial2 = Dial {
+            peer_addr: socket1.local_addr()?,
+            channel: 0,
+            remote_public: socket1.identity(),
+            protocols,
+        };
+
+        let channel1 = task::spawn(async move { socket1.incoming().await.unwrap().unwrap() });
+
+        let channel2 = task::spawn(async move { socket2.dial(&dial2).await.unwrap() });
+
+        let (channel1, channel2) = join!(channel1, channel2);
+
+        assert_eq!(channel1.protocol(), "/ping/1.0");
+        assert_eq!(channel2.protocol(), "/ping/1.0");
+        assert_eq!(channel2.external_addr(), Some(&external_addr));
+
+        channel2.send("ping".into()).await?;
+        let msg = channel1.recv().await?;
+        assert_eq!(msg.payload(), b"ping");
+
+        channel1.send("pong".into()).await?;
+        let msg = channel2.recv().await?;
+        assert_eq!(msg.payload(), b"pong");
+
+        Ok(())
+    }
 
     #[test]
-    fn it_works() {
-        assert_eq!(2 + 2, 4);
+    fn test_efcp() {
+        task::block_on(efcp()).unwrap();
     }
 }

@@ -4,9 +4,9 @@ pub type Protocol = &'static str;
 pub type Protocols = &'static [Protocol];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Message {
-    Propose(&'static str),
-    Accept(&'static str),
+pub enum Message<'a> {
+    Propose(&'a str),
+    Accept,
     Fail,
 }
 
@@ -31,11 +31,7 @@ impl Negotiation {
         }
     }
 
-    fn supported(&self, protocol: Protocol) -> bool {
-        self.protocols.iter().find(|p| **p == protocol).is_some()
-    }
-
-    fn propose(&mut self) -> Message {
+    fn propose(&mut self) -> Message<'static> {
         let i = self.tried;
         self.tried += 1;
         if let Some(protocol) = self.protocols.get(i) {
@@ -47,13 +43,13 @@ impl Negotiation {
         }
     }
 
-    pub fn initiate(&mut self) -> Message {
+    pub fn initiate(&mut self) -> Message<'static> {
         assert!(!self.started);
         self.started = true;
         self.propose()
     }
 
-    pub fn message(&mut self, msg: Message) -> Result<Option<Message>, HandshakeError> {
+    pub fn message(&mut self, msg: &Message) -> Result<Option<Message<'static>>, HandshakeError> {
         self.started = true;
         match msg {
             Message::Propose(protocol) => {
@@ -61,22 +57,23 @@ impl Negotiation {
                     return Err(HandshakeError::ProtocolError);
                 }
 
-                if self.supported(protocol) {
-                    self.accepted = Some(protocol);
+                self.accepted = self
+                    .protocols
+                    .into_iter()
+                    .find(|p| *p == protocol)
+                    .map(|p| *p);
+
+                if self.accepted.is_some() {
                     self.finished = true;
-                    Ok(Some(Message::Accept(protocol)))
+                    Ok(Some(Message::Accept))
                 } else {
                     Ok(Some(self.propose()))
                 }
             }
-            Message::Accept(protocol) => {
-                if self.supported(protocol) {
-                    self.accepted = Some(protocol);
-                    self.finished = true;
-                    Ok(None)
-                } else {
-                    Err(HandshakeError::ProtocolError)
-                }
+            Message::Accept => {
+                self.accepted = self.proposed.take();
+                self.finished = true;
+                Ok(None)
             }
             Message::Fail => {
                 self.finished = true;
@@ -105,9 +102,9 @@ mod tests {
         let mut n2 = Negotiation::new(&["/ping/1.0"]);
         let m1 = n1.initiate();
         assert_eq!(m1, Message::Propose("/ping/1.0"));
-        let m2 = n2.message(m1).unwrap().unwrap();
-        assert_eq!(m2, Message::Accept("/ping/1.0"));
-        let m3 = n1.message(m2).unwrap();
+        let m2 = n2.message(&m1).unwrap().unwrap();
+        assert_eq!(m2, Message::Accept);
+        let m3 = n1.message(&m2).unwrap();
         assert_eq!(m3, None);
 
         assert!(n1.is_finished());
@@ -127,13 +124,13 @@ mod tests {
         let m1 = n1.initiate();
         assert_eq!(m1, Message::Propose("/ping/1.0"));
 
-        let m2 = n2.message(m1).unwrap().unwrap();
+        let m2 = n2.message(&m1).unwrap().unwrap();
         assert_eq!(m2, Message::Propose("/ping/2.0"));
 
-        let m3 = n1.message(m2).unwrap().unwrap();
+        let m3 = n1.message(&m2).unwrap().unwrap();
         assert_eq!(m3, Message::Fail);
 
-        let m4 = n2.message(m3).unwrap();
+        let m4 = n2.message(&m3).unwrap();
         assert_eq!(m4, None);
 
         assert!(n1.is_finished());
@@ -153,13 +150,13 @@ mod tests {
         let m1 = n1.initiate();
         assert_eq!(m1, Message::Propose("/ping/2.0"));
 
-        let m2 = n2.message(m1).unwrap().unwrap();
+        let m2 = n2.message(&m1).unwrap().unwrap();
         assert_eq!(m2, Message::Propose("/ping/1.0"));
 
-        let m3 = n1.message(m2).unwrap().unwrap();
-        assert_eq!(m3, Message::Accept("/ping/1.0"));
+        let m3 = n1.message(&m2).unwrap().unwrap();
+        assert_eq!(m3, Message::Accept);
 
-        let m4 = n2.message(m3).unwrap();
+        let m4 = n2.message(&m3).unwrap();
         assert_eq!(m4, None);
 
         assert!(n1.is_finished());

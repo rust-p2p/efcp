@@ -14,3 +14,7 @@ disco = { git = "https://github.com/rust-p2p/disco" }
 dtp = { path = "../dtp" }
 dtcp = { path = "../dtcp" }
 failure = "0.1"
+
+[dev-dependencies]
+futures-preview = { version = "0.3.0-alpha.19", features = ["async-await"] }
+rand = "0.7"
