@@ -10,6 +10,16 @@ use std::collections::VecDeque;
 use std::io::Result;
 use std::sync::{Arc, Mutex};
 
+/// Sender trait.
+#[async_trait]
+pub trait Sender: Clone + Send + Sync {
+    /// Packet type sent and received through channel.
+    type Packet: BasePacket;
+
+    /// Send a packet to the channel.
+    async fn send(&self, packet: Self::Packet) -> Result<()>;
+}
+
 /// Channel trait is used to decouple different parts of efcp.
 #[async_trait]
 pub trait Channel: Send + Sync {
@@ -24,7 +34,7 @@ pub trait Channel: Send + Sync {
 }
 
 /// Packet trait is used to encapsulate packets into a lower layer packet.
-pub trait BasePacket: BufMut + Clone + Send {
+pub trait BasePacket: BufMut + Clone + Send + Sync {
     /// Creates a new packet for the given payload size.
     fn new(payload_len: usize) -> Self;
 
