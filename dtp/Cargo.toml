@@ -10,7 +10,9 @@ async-trait = "0.1"
 byteorder = "1.3.2"
 bytes = "0.4.12"
 channel = { path = "../channel" }
+crossbeam = "0.7"
 libc = "0.2.62"
+slab = "0.4.2"
 
 [dev-dependencies]
 failure = "0.1"
