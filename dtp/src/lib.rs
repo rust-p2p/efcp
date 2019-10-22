@@ -297,27 +297,6 @@ impl DtpChannel {
     pub fn channel(&self) -> u8 {
         self.channel.channel_id
     }
-
-    /// Returns a clonable sender.
-    ///
-    /// ## Examples
-    ///
-    /// ```no_run
-    /// # use async_std::prelude::*;
-    /// # fn main() -> Result<(), failure::Error> { async_std::task::block_on(async {
-    /// #
-    /// use channel::Sender;
-    /// use dtp::DtpSocket;
-    ///
-    /// let socket = DtpSocket::bind("127.0.0.1:0".parse()?, 1, 1).await?;
-    /// let channel = socket.outgoing("127.0.0.1:8000".parse()?, 0)?;
-    /// channel.sender().send("ping".into()).await?;
-    /// #
-    /// # Ok(()) }) }
-    /// ```
-    pub fn sender(&self) -> DtpSender {
-        DtpSender(self)
-    }
 }
 
 impl Drop for DtpChannel {
@@ -370,20 +349,13 @@ impl channel::Channel for DtpChannel {
     }
 }
 
-/// Cloneable sender of a dtp channel.
-#[derive(Clone)]
-pub struct DtpSender<'a>(&'a DtpChannel);
-
 #[async_trait]
-impl<'a> channel::Sender for DtpSender<'a> {
-    type Packet = DtpPacket;
-
-    async fn send(&self, packet: Self::Packet) -> Result<()> {
-        SendFuture {
-            channel: self.0,
-            packet,
-        }
-        .await
+impl channel::ChannelExt for DtpChannel {
+    fn sender(&self) -> channel::Sender<Self> {
+        channel::Sender::new(Self {
+            channel: self.channel.clone(),
+            socket: self.socket.clone(),
+        })
     }
 }
 

@@ -10,16 +10,6 @@ use std::collections::VecDeque;
 use std::io::Result;
 use std::sync::{Arc, Mutex};
 
-/// Sender trait.
-#[async_trait]
-pub trait Sender: Clone + Send + Sync {
-    /// Packet type sent and received through channel.
-    type Packet: BasePacket;
-
-    /// Send a packet to the channel.
-    async fn send(&self, packet: Self::Packet) -> Result<()>;
-}
-
 /// Channel trait is used to decouple different parts of efcp.
 #[async_trait]
 pub trait Channel: Send + Sync {
@@ -31,6 +21,36 @@ pub trait Channel: Send + Sync {
 
     /// Send a packet to the channel.
     async fn send(&self, packet: Self::Packet) -> Result<()>;
+}
+
+/// Channel extension.
+#[async_trait]
+pub trait ChannelExt: Channel + Sized {
+    /// Returns a cloneable sender for the channel.
+    fn sender(&self) -> Sender<Self>;
+}
+
+/// Cloneable sender.
+pub struct Sender<C: ChannelExt>(C);
+
+impl<C: ChannelExt> Sender<C> {
+    /// Creates a new sender.
+    pub fn new(channel: C) -> Self {
+        Self(channel)
+    }
+}
+
+impl<C: ChannelExt> Sender<C> {
+    /// Send a packet to the channel.
+    pub async fn send(&self, packet: C::Packet) -> Result<()> {
+        self.0.send(packet).await
+    }
+}
+
+impl<C: ChannelExt> Clone for Sender<C> {
+    fn clone(&self) -> Self {
+        self.0.sender()
+    }
 }
 
 /// Packet trait is used to encapsulate packets into a lower layer packet.
@@ -109,6 +129,13 @@ impl Channel for Loopback {
 
     async fn recv(&self) -> Result<Self::Packet> {
         Ok(RecvFuture(self).await)
+    }
+}
+
+#[async_trait]
+impl ChannelExt for Loopback {
+    fn sender(&self) -> Sender<Self> {
+        Sender(self.clone())
     }
 }
 

@@ -3,7 +3,7 @@
 #![deny(warnings)]
 use async_trait::async_trait;
 use bytes::BytesMut;
-use channel::{Channel, Loopback};
+use channel::{Channel, ChannelExt, Loopback, Sender};
 use rand::rngs::OsRng;
 use rand::Rng;
 use std::collections::VecDeque;
@@ -76,6 +76,17 @@ impl Channel for LossyChannel {
         self.rx.recv().await
     }
 }
+
+#[async_trait]
+impl ChannelExt for LossyChannel {
+    fn sender(&self) -> Sender<Self> {
+        Sender::new(Self {
+            rx: self.rx.clone(),
+            tx: self.tx.clone(),
+        })
+    }
+}
+
 
 /// Lossy channel builder.
 pub struct LossyChannelBuilder {
