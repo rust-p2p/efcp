@@ -61,142 +61,177 @@
 //! ## References
 //! [0]: http://nes.fit.vutbr.cz/ivesely/specs/uploads/RINA/EFCPSpec140124.pdf
 //! [1]: Timer-Based Mechanisms in Reliable Transport Connection Management
-#![deny(missing_docs)]
-#![deny(warnings)]
+//#![deny(missing_docs)]
+//#![deny(warnings)]
 mod packet;
+mod retransmission;
 
 pub use crate::packet::{DtcpPacket, DtcpType};
+use crate::retransmission::Retransmission;
+use async_std::sync::Mutex;
 use async_trait::async_trait;
-use channel::{Channel, Packet};
+use channel::{BasePacket, Channel, ChannelExt, Packet};
+use crossbeam::atomic::AtomicCell;
 use std::io::Result;
-use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-struct Timer {
-    enable: bool,
-    start: Instant,
-    interval: Duration,
+trait FetchMax<T> {
+    fn fetch_max(&self, nval: T);
 }
 
-impl Timer {
-    fn new(interval: Duration) -> Self {
-        Self {
-            enable: false,
-            start: Instant::now(),
-            interval,
-        }
-    }
-
-    fn start(&mut self) {
-        self.start = Instant::now();
-        self.enable = true;
-    }
-
-    fn stop(&mut self) -> bool {
-        if self.enable {
-            self.enable = false;
-            Instant::now() - self.start > self.interval
-        } else {
-            false
+impl FetchMax<u16> for AtomicCell<u16> {
+    fn fetch_max(&self, nval: u16) {
+        loop {
+            let oval = self.load();
+            let mval = oval.max(nval);
+            if self.compare_and_swap(oval, mval) == mval {
+                break;
+            }
         }
     }
 }
 
 /// Builder for dtcp channels.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct DtcpBuilder {
-    mpl: Duration,
+    /// Duration of inactivity before sending a keep alive.
+    keep_alive: Duration,
+    /// Maximum time to wait before sending an ack for a received packet.
+    ///
+    /// Not acking a packet immediately allows acking multiple packets
+    /// simultanously or receiving packets out of order before reporting
+    /// one missing.
     ack: Duration,
-    max_retries: u8,
+    /// Duration to wait before retransmitting.
+    rtx: Duration,
+    /// Number of retransmissions before reporting ETIMEDOUT.
+    max_rtx: u8,
 }
 
 impl DtcpBuilder {
     /// Creates a new `DtcpBuilder`.
     pub fn new() -> Self {
         Self {
-            mpl: Duration::from_millis(1000),
+            keep_alive: Duration::from_secs(10),
             ack: Duration::from_millis(100),
-            max_retries: 3,
+            rtx: Duration::from_secs(1),
+            max_rtx: 2,
         }
     }
 
-    /// Sets the maximum packet lifetime.
-    pub fn set_mpl(mut self, mpl: Duration) -> Self {
-        self.mpl = mpl;
+    /// Duration of inactivity before sending a keep alive.
+    pub fn set_keep_alive(mut self, keep_alive: Duration) -> Self {
+        self.keep_alive = keep_alive;
         self
     }
 
-    /// Sets the maximum time to ack.
+    /// Maximum time to wait before sending an ack for a received packet.
+    ///
+    /// Not acking a packet immediately allows acking multiple packets
+    /// simultanously or receiving packets out of order before reporting
+    /// one missing.
     pub fn set_ack(mut self, ack: Duration) -> Self {
         self.ack = ack;
         self
     }
 
-    /// Sets the maximum number of retries.
-    pub fn set_max_retries(mut self, max_retries: u8) -> Self {
-        self.max_retries = max_retries;
+    /// Duration to wait before retransmitting.
+    pub fn set_rtx(mut self, rtx: Duration) -> Self {
+        self.rtx = rtx;
+        self
+    }
+
+    /// Number of retransmissions before reporting ETIMEDOUT.
+    pub fn set_max_rtx(mut self, max_rtx: u8) -> Self {
+        self.max_rtx = max_rtx;
         self
     }
 
     /// Wrapps a dtp channel in a dtcp channel.
-    pub fn build_channel<C: Channel>(&self, channel: C) -> DtcpChannel<C> {
-        let dx = 2 * self.mpl + self.ack;
-        let dt = (self.max_retries + 1) as u32 * dx;
-        let sit = 2 * dt;
-        let rit = 3 * dt;
+    pub fn build_channel<C: ChannelExt + 'static>(&self, channel: C) -> DtcpChannel<C> {
+        let tx = Retransmission::new(channel.sender(), self.rtx, self.max_rtx);
         DtcpChannel {
             channel,
-            set_drf: AtomicBool::new(true),
-            seq_num: AtomicU16::new(0),
-            sit: Mutex::new(Timer::new(sit)),
-            rit: Mutex::new(Timer::new(rit)),
+            set_drf: AtomicCell::new(true),
+            seq_num: AtomicCell::new(0),
+            tx: Mutex::new(tx),
+            last_ack: AtomicCell::new(0),
         }
     }
 }
 
 /// Dtcp channel.
-pub struct DtcpChannel<C> {
+pub struct DtcpChannel<C: ChannelExt> {
     channel: C,
-    set_drf: AtomicBool,
-    seq_num: AtomicU16,
-    sit: Mutex<Timer>,
-    rit: Mutex<Timer>,
+    set_drf: AtomicCell<bool>,
+    seq_num: AtomicCell<u16>,
+    tx: Mutex<Retransmission<C>>,
+    last_ack: AtomicCell<u16>,
 }
 
-#[async_trait]
-impl<C: Channel> Channel for DtcpChannel<C> {
-    type Packet = DtcpPacket<C::Packet>;
-
-    async fn send(&self, mut packet: Self::Packet) -> Result<()> {
-        let expired = self.sit.lock().unwrap().stop();
-        let drf = self.set_drf.swap(false, Ordering::SeqCst) || expired;
-        let seq_num = self.seq_num.fetch_add(1, Ordering::SeqCst);
+impl<C: ChannelExt + 'static> DtcpChannel<C> {
+    async fn send_transfer(&self, mut packet: DtcpPacket<C::Packet>) -> Result<()> {
+        let drf = self.set_drf.swap(false);
+        let seq_num = self.seq_num.fetch_add(1);
+        println!("transfer {}", seq_num);
         packet.set_ty(DtcpType::Transfer { drf });
         packet.set_seq_num(seq_num);
-        self.channel.send(packet.into_packet()).await?;
-        self.sit.lock().unwrap().start();
+        let packet = packet.into_packet();
+        self.tx.lock().await.send(seq_num, packet)?;
         Ok(())
     }
 
-    async fn recv(&self) -> Result<Self::Packet> {
-        let expired = self.rit.lock().unwrap().stop();
-        self.set_drf.store(expired, Ordering::SeqCst);
-        let packet = self.channel.recv().await?;
-        let packet = DtcpPacket::parse(packet)?;
-        self.rit.lock().unwrap().start();
-        Ok(packet)
+    async fn send_ack(&self, seq_num: u16) {
+        println!("ack {}", seq_num);
+        let mut packet = DtcpPacket::new(2);
+        packet.set_ty(DtcpType::Control);
+        packet.set_seq_num(seq_num);
+        self.channel.send(packet.into_packet()).await.ok();
     }
 }
 
-impl<C> DtcpChannel<C> {
+#[async_trait]
+impl<C: ChannelExt + 'static> Channel for DtcpChannel<C> {
+    type Packet = DtcpPacket<<C as Channel>::Packet>;
+
+    async fn send(&self, packet: Self::Packet) -> Result<()> {
+        self.send_transfer(packet).await
+    }
+
+    async fn recv(&self) -> Result<Self::Packet> {
+        loop {
+            println!("loop");
+            let packet = self.channel.recv().await?;
+            let packet = DtcpPacket::parse(packet)?;
+            match packet.ty() {
+                DtcpType::Transfer { drf } => {
+                    if drf {
+                        self.last_ack.store(packet.seq_num());
+                        self.send_ack(packet.seq_num()).await;
+                        return Ok(packet);
+                    }
+                    if packet.seq_num() == self.last_ack.load() + 1 {
+                        self.last_ack.fetch_max(packet.seq_num());
+                        self.send_ack(packet.seq_num()).await;
+                        return Ok(packet);
+                    }
+                }
+                DtcpType::Control => {
+                    self.tx.lock().await.ack(packet.seq_num());
+                }
+            }
+        }
+    }
+}
+
+impl<C: ChannelExt> DtcpChannel<C> {
     /// Returns the underlying channel.
     pub fn unwrap(self) -> C {
         self.channel
     }
 }
 
-impl<C> core::ops::Deref for DtcpChannel<C> {
+impl<C: ChannelExt> core::ops::Deref for DtcpChannel<C> {
     type Target = C;
 
     fn deref(&self) -> &Self::Target {
@@ -225,10 +260,10 @@ mod tests {
 
     fn setup_dtp(dtcp: DtcpBuilder) -> (DtcpChannel<DtpChannel>, DtcpChannel<DtpChannel>) {
         task::block_on(async {
-            let s1 = DtpSocket::bind("127.0.0.1:0".parse().unwrap())
+            let s1 = DtpSocket::bind("127.0.0.1:0".parse().unwrap(), 1, 1)
                 .await
                 .unwrap();
-            let s2 = DtpSocket::bind("127.0.0.1:0".parse().unwrap())
+            let s2 = DtpSocket::bind("127.0.0.1:0".parse().unwrap(), 1, 1)
                 .await
                 .unwrap();
             let a = dtcp.build_channel(s1.outgoing(s2.local_addr().unwrap(), 0).unwrap());
@@ -237,7 +272,10 @@ mod tests {
         })
     }
 
-    async fn single_packet<C: Channel>(a: DtcpChannel<C>, b: DtcpChannel<C>) -> Result<()> {
+    async fn single_packet<C: ChannelExt + 'static>(
+        a: DtcpChannel<C>,
+        b: DtcpChannel<C>,
+    ) -> Result<()> {
         a.send("ping".into()).await?;
         let packet = b.recv().await?;
         assert_eq!(packet.payload(), b"ping");
@@ -248,6 +286,15 @@ mod tests {
     fn test_mock_reliable() {
         let dtcp = DtcpBuilder::new();
         let (a, b) = setup_mock(dtcp, 1.0, 0.0);
+        task::block_on(single_packet(a, b)).unwrap();
+    }
+
+    #[test]
+    fn test_mock_unreliable() {
+        let dtcp = DtcpBuilder::new()
+            .set_rtx(Duration::from_millis(200))
+            .set_max_rtx(10);
+        let (a, b) = setup_mock(dtcp, 0.1, 0.1);
         task::block_on(single_packet(a, b)).unwrap();
     }
 
