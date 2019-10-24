@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use byteorder::{BigEndian, ByteOrder};
 use bytes::BufMut;
-use channel::{derive_packet, BasePacket, Channel, Packet};
+use channel::{derive_packet, BasePacket, Channel, ChannelExt, Packet, Sender};
 use disco::{StatelessTransportState, TAG_LEN};
 use std::io::{Error, ErrorKind, Result};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -96,6 +96,13 @@ impl<C: Channel> Channel for DiscoChannel<C> {
             .read_message(nonce, packet.payload_mut(), tag)
             .map_err(|err| Error::new(ErrorKind::Other, format!("{:?}", err)))?;
         Ok(packet)
+    }
+}
+
+#[async_trait]
+impl<C: ChannelExt> ChannelExt for DiscoChannel<C> {
+    fn sender(&self) -> Sender<Self> {
+        unimplemented!();
     }
 }
 
