@@ -1,5 +1,6 @@
 use crate::packet::DtpPacket;
 use crate::udp::UdpEcnSocket;
+use addr::Addr;
 use async_std::io::{Error, ErrorKind, Result};
 use async_std::task::{Context, Poll};
 use bytes::BufMut;
@@ -7,12 +8,11 @@ use channel::BasePacket;
 use crossbeam::queue::SegQueue;
 use slab::Slab;
 use std::collections::{HashMap, HashSet};
-use std::net::SocketAddr;
 use std::sync::Mutex;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct Channel {
-    pub(crate) peer_addr: SocketAddr,
+    pub(crate) peer_addr: Addr,
     pub(crate) channel_id: u8,
 }
 
@@ -25,8 +25,8 @@ pub(crate) struct InnerDtpSocket {
 }
 
 impl InnerDtpSocket {
-    pub async fn bind(addr: SocketAddr) -> Result<Self> {
-        let socket = UdpEcnSocket::bind(addr).await?;
+    pub async fn bind(addr: Addr) -> Result<Self> {
+        let socket = UdpEcnSocket::bind(addr.socket_addr()).await?;
         Ok(Self {
             socket,
             connections: Mutex::new(Slab::new()),
@@ -49,8 +49,8 @@ impl InnerDtpSocket {
         }
     }
 
-    pub fn local_addr(&self) -> Result<SocketAddr> {
-        self.socket.local_addr()
+    pub fn local_addr(&self) -> Result<Addr> {
+        self.socket.local_addr().map(Into::into)
     }
 
     pub fn ttl(&self) -> Result<u8> {
@@ -77,7 +77,7 @@ impl InnerDtpSocket {
                 return Poll::Ready(Err(err));
             }
             let channel = Channel {
-                peer_addr,
+                peer_addr: peer_addr.into(),
                 channel_id: packet.channel(),
             };
             packet.set_ecn(ecn);
@@ -143,7 +143,7 @@ impl InnerDtpSocket {
         }
     }
 
-    pub fn outgoing(&self, peer_addr: SocketAddr, channel_id: u8) -> Result<Channel> {
+    pub fn outgoing(&self, peer_addr: Addr, channel_id: u8) -> Result<Channel> {
         let channel = Channel {
             peer_addr,
             channel_id,
@@ -172,6 +172,6 @@ impl InnerDtpSocket {
     ) -> Poll<Result<()>> {
         packet.set_channel(channel.channel_id);
         self.socket
-            .poll_send(cx, &channel.peer_addr, packet.ecn(), packet.bytes())
+            .poll_send(cx, &channel.peer_addr.socket_addr(), packet.ecn(), packet.bytes())
     }
 }

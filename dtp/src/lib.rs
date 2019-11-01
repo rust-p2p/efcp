@@ -17,13 +17,13 @@ mod udp;
 
 use crate::dtp::{Channel, InnerDtpSocket};
 pub use crate::packet::DtpPacket;
-use async_std::io::Result;
+use addr::{Addr, ToAddr};
+use async_std::io::{Error, ErrorKind, Result};
 use async_std::stream::Stream;
 use async_std::task::{Context, Poll};
 use async_trait::async_trait;
 use core::future::Future;
 use core::pin::Pin;
-use std::net::SocketAddr;
 use std::sync::Arc;
 
 /// A DTP socket.
@@ -42,8 +42,8 @@ use std::sync::Arc;
 /// use channel::Channel;
 /// use dtp::DtpSocket;
 ///
-/// let socket = DtpSocket::bind("127.0.0.1:0".parse()?).await?;
-/// let mut channel = socket.outgoing("127.0.0.1:8000".parse()?, 0)?;
+/// let socket = DtpSocket::bind("/ip4/127.0.0.1").await?;
+/// let mut channel = socket.outgoing("/ip4/127.0.0.1/udp/8000", 0)?;
 /// channel.send("ping".into()).await?;
 /// let response = channel.recv().await?;
 /// #
@@ -56,7 +56,7 @@ use std::sync::Arc;
 /// use channel::Channel;
 /// use dtp::DtpSocket;
 ///
-/// let socket = DtpSocket::bind("127.0.0.1:0".parse()?).await?;
+/// let socket = DtpSocket::bind("/ip4/127.0.0.1").await?;
 /// let mut incoming = socket.incoming();
 /// while let Some(channel) = incoming.next().await {
 ///     let channel = channel?;
@@ -83,11 +83,14 @@ impl DtpSocket {
     /// #
     /// use dtp::DtpSocket;
     ///
-    /// let socket = DtpSocket::bind("127.0.0.1:0".parse()?).await?;
+    /// let socket = DtpSocket::bind("/ip4/127.0.0.1").await?;
     /// #
     /// # Ok(()) }) }
     /// ```
-    pub async fn bind(addr: SocketAddr) -> Result<Self> {
+    pub async fn bind<T: ToAddr>(addr: T) -> Result<Self> {
+        let addr = addr.to_addr().map_err(|_| {
+            Error::new(ErrorKind::Other, "failed to parse socket addr")
+        })?;
         let socket = InnerDtpSocket::bind(addr).await?;
         Ok(Self {
             socket: Arc::new(socket),
@@ -108,7 +111,7 @@ impl DtpSocket {
     /// use channel::Channel;
     /// use dtp::DtpSocket;
     ///
-    /// let socket = DtpSocket::bind("127.0.0.1:0".parse()?).await?;
+    /// let socket = DtpSocket::bind("/ip4/127.0.0.1").await?;
     /// let mut incoming = socket.incoming();
     /// while let Some(channel) = incoming.next().await {
     ///     let channel = channel?;
@@ -134,14 +137,17 @@ impl DtpSocket {
     /// use channel::Channel;
     /// use dtp::DtpSocket;
     ///
-    /// let socket = DtpSocket::bind("127.0.0.1:0".parse()?).await?;
-    /// let channel = socket.outgoing("127.0.0.1:8000".parse()?, 0)?;
+    /// let socket = DtpSocket::bind("/ip4/127.0.0.1").await?;
+    /// let channel = socket.outgoing("/ip4/127.0.0.1/udp/8000", 0)?;
     /// channel.send("ping".into()).await?;
     /// let response = channel.recv().await?;
     /// #
     /// # Ok(()) }) }
     /// ```
-    pub fn outgoing(&self, peer_addr: SocketAddr, channel: u8) -> Result<DtpChannel> {
+    pub fn outgoing<T: ToAddr>(&self, peer_addr: T, channel: u8) -> Result<DtpChannel> {
+        let peer_addr = peer_addr.to_addr().map_err(|_| {
+            Error::new(ErrorKind::Other, "failed to parse socket addr")
+        })?;
         let channel = self.socket.outgoing(peer_addr, channel)?;
         Ok(DtpChannel {
             socket: self.socket.clone(),
@@ -157,12 +163,12 @@ impl DtpSocket {
     /// # use dtp::DtpSocket;
     /// # fn main() -> Result<(), failure::Error> { async_std::task::block_on(async {
     /// #
-    /// let socket = DtpSocket::bind("127.0.0.1:0".parse()?).await?;
+    /// let socket = DtpSocket::bind("/ip4/127.0.0.1").await?;
     /// socket.local_addr()?;
     /// #
     /// # Ok(()) }) }
     /// ```
-    pub fn local_addr(&self) -> Result<SocketAddr> {
+    pub fn local_addr(&self) -> Result<Addr> {
         self.socket.local_addr()
     }
 
@@ -219,8 +225,8 @@ impl<'a> Stream for Incoming<'a> {
 /// use channel::Channel;
 /// use dtp::{DtpChannel, DtpSocket};
 ///
-/// let socket = DtpSocket::bind("127.0.0.1:0".parse()?).await?;
-/// let channel = socket.outgoing("127.0.0.1:8000".parse()?, 0)?;
+/// let socket = DtpSocket::bind("/ip4/127.0.0.1").await?;
+/// let channel = socket.outgoing("/ip4/127.0.0.1/udp/8000", 0)?;
 /// channel.send("ping".into()).await?;
 /// let response = channel.recv().await?;
 /// #
@@ -240,13 +246,13 @@ impl DtpChannel {
     /// # fn main() -> Result<(), failure::Error> { async_std::task::block_on(async {
     /// #
     /// use dtp::DtpSocket;
-    /// let socket = DtpSocket::bind("127.0.0.1:0".parse()?).await?;
-    /// let channel = socket.outgoing("127.0.0.1:8000".parse()?, 0)?;
+    /// let socket = DtpSocket::bind("/ip4/127.0.0.1").await?;
+    /// let channel = socket.outgoing("/ip4/127.0.0.1/udp/8000", 0)?;
     /// channel.local_addr()?;
     /// #
     /// # Ok(()) }) }
     /// ```
-    pub fn local_addr(&self) -> Result<SocketAddr> {
+    pub fn local_addr(&self) -> Result<Addr> {
         self.socket.local_addr()
     }
 
@@ -258,13 +264,13 @@ impl DtpChannel {
     /// # fn main() -> Result<(), failure::Error> { async_std::task::block_on(async {
     /// #
     /// use dtp::DtpSocket;
-    /// let socket = DtpSocket::bind("127.0.0.1:0".parse()?).await?;
-    /// let channel = socket.outgoing("127.0.0.1:8000".parse()?, 0)?;
+    /// let socket = DtpSocket::bind("/ip4/127.0.0.1").await?;
+    /// let channel = socket.outgoing("/ip4/127.0.0.1/udp/8000", 0)?;
     /// channel.peer_addr();
     /// #
     /// # Ok(()) }) }
     /// ```
-    pub fn peer_addr(&self) -> &SocketAddr {
+    pub fn peer_addr(&self) -> &Addr {
         &self.channel.peer_addr
     }
 
@@ -279,7 +285,7 @@ impl DtpChannel {
     /// use channel::Channel;
     /// use dtp::DtpSocket;
     ///
-    /// let socket = DtpSocket::bind("127.0.0.1:0".parse()?).await?;
+    /// let socket = DtpSocket::bind("/ip4/127.0.0.1").await?;
     /// let mut incoming = socket.incoming();
     /// while let Some(channel) = incoming.next().await {
     ///     let channel = channel?;
@@ -354,10 +360,10 @@ mod tests {
     use failure::Error;
 
     async fn outgoing_incoming() -> Result<(), Error> {
-        let socket_responder = DtpSocket::bind("127.0.0.1:0".parse()?).await?;
+        let socket_responder = DtpSocket::bind("/ip4/127.0.0.1").await?;
         let addr_responder = socket_responder.local_addr()?;
 
-        let socket_initiator = DtpSocket::bind("127.0.0.1:0".parse()?).await?;
+        let socket_initiator = DtpSocket::bind("/ip4/127.0.0.1").await?;
         let addr_initiator = socket_initiator.local_addr()?;
 
         let channel_initiator = socket_initiator.outgoing(addr_responder, 0)?;
@@ -383,10 +389,10 @@ mod tests {
     }
 
     async fn outgoing_outgoing() -> Result<(), Error> {
-        let socket1 = DtpSocket::bind("127.0.0.1:0".parse()?).await?;
+        let socket1 = DtpSocket::bind("/ip4/127.0.0.1").await?;
         let addr1 = socket1.local_addr()?;
 
-        let socket2 = DtpSocket::bind("127.0.0.1:0".parse()?).await?;
+        let socket2 = DtpSocket::bind("/ip4/127.0.0.1").await?;
         let addr2 = socket2.local_addr()?;
 
         let channel1 = socket1.outgoing(addr2, 3)?;
@@ -406,7 +412,7 @@ mod tests {
     }
 
     async fn ttl() -> Result<(), Error> {
-        let socket = DtpSocket::bind("127.0.0.1:0".parse()?).await?;
+        let socket = DtpSocket::bind("/ip4/127.0.0.1").await?;
         let ttl = socket.ttl()?;
         socket.set_ttl(ttl + 10)?;
         assert_eq!(socket.ttl()?, ttl + 10);
@@ -419,10 +425,10 @@ mod tests {
     }
 
     async fn channel() -> Result<(), Error> {
-        let socket1 = DtpSocket::bind("127.0.0.1:0".parse()?).await?;
+        let socket1 = DtpSocket::bind("/ip4/127.0.0.1").await?;
         let addr1 = socket1.local_addr()?;
 
-        let socket2 = DtpSocket::bind("127.0.0.1:0".parse()?).await?;
+        let socket2 = DtpSocket::bind("/ip4/127.0.0.1").await?;
         let addr2 = socket2.local_addr()?;
 
         let channel1: Box<dyn Channel<Packet = DtpPacket>> = Box::new(socket1.outgoing(addr2, 3)?);
@@ -442,8 +448,8 @@ mod tests {
     }
 
     async fn ipv6() -> Result<(), Error> {
-        let socket1 = DtpSocket::bind("[::1]:0".parse()?).await?;
-        let socket2 = DtpSocket::bind("[::1]:0".parse()?).await?;
+        let socket1 = DtpSocket::bind("/ip6/::1").await?;
+        let socket2 = DtpSocket::bind("/ip6/::1").await?;
         let ch1 = socket1.outgoing(socket2.local_addr()?, 0)?;
         let ch2 = socket2.outgoing(socket1.local_addr()?, 0)?;
         ch1.send("ping".into()).await?;
