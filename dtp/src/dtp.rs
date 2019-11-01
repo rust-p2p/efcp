@@ -4,9 +4,11 @@ use async_std::io::{Error, ErrorKind, Result};
 use async_std::task::{Context, Poll};
 use bytes::BufMut;
 use channel::BasePacket;
-use std::collections::{HashMap, HashSet, VecDeque};
+use crossbeam::queue::SegQueue;
+use slab::Slab;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct Channel {
@@ -14,67 +16,57 @@ pub(crate) struct Channel {
     pub(crate) channel_id: u8,
 }
 
-struct InnerDtpSocket {
-    udp: UdpEcnSocket,
-    connections: HashMap<Channel, VecDeque<DtpPacket>>,
-    channels: HashSet<Channel>,
-    incoming: VecDeque<Channel>,
+pub(crate) struct InnerDtpSocket {
+    socket: UdpEcnSocket,
+    connections: Mutex<Slab<SegQueue<DtpPacket>>>,
+    channel_lookup: Mutex<HashMap<Channel, usize>>,
+    channels: Mutex<HashSet<Channel>>,
+    incoming: SegQueue<Channel>,
 }
 
 impl InnerDtpSocket {
-    async fn bind(addr: SocketAddr) -> Result<Self> {
+    pub async fn bind(addr: SocketAddr) -> Result<Self> {
         let socket = UdpEcnSocket::bind(addr).await?;
         Ok(Self {
-            udp: socket,
-            connections: HashMap::new(),
-            channels: HashSet::new(),
-            incoming: VecDeque::new(),
+            socket,
+            connections: Mutex::new(Slab::new()),
+            channel_lookup: Default::default(),
+            channels: Default::default(),
+            incoming: Default::default(),
         })
     }
 
-    fn rx_queue(&mut self, channel: &Channel) -> &mut VecDeque<DtpPacket> {
-        if !self.connections.contains_key(channel) {
-            self.connections.insert(channel.clone(), VecDeque::new());
+    // lock order: channel_lookup, connections
+    fn connection_id(&self, channel: &Channel) -> Option<usize> {
+        let mut channel_lookup = self.channel_lookup.lock().unwrap();
+        if let Some(conn_id) = channel_lookup.get(channel) {
+            Some(*conn_id)
+        } else {
+            let mut conns = self.connections.lock().unwrap();
+            let conn_id = conns.insert(SegQueue::new());
+            channel_lookup.insert(channel.clone(), conn_id);
+            Some(conn_id)
         }
-        self.connections.get_mut(channel).unwrap()
-    }
-}
-
-#[derive(Clone)]
-pub(crate) struct OuterDtpSocket {
-    inner: Arc<Mutex<InnerDtpSocket>>,
-}
-
-impl OuterDtpSocket {
-    pub async fn bind(addr: SocketAddr) -> Result<Self> {
-        let socket = InnerDtpSocket::bind(addr).await?;
-        Ok(Self {
-            inner: Arc::new(Mutex::new(socket)),
-        })
     }
 
     pub fn local_addr(&self) -> Result<SocketAddr> {
-        let socket = self.inner.lock().unwrap();
-        socket.udp.local_addr()
+        self.socket.local_addr()
     }
 
     pub fn ttl(&self) -> Result<u8> {
-        let socket = self.inner.lock().unwrap();
-        socket.udp.ttl()
+        self.socket.ttl()
     }
 
     pub fn set_ttl(&self, ttl: u8) -> Result<()> {
-        let socket = self.inner.lock().unwrap();
-        socket.udp.set_ttl(ttl)
+        self.socket.set_ttl(ttl)
     }
 
     fn poll_recv(&self, cx: &mut Context) -> Poll<Result<()>> {
         let (channel, payload) = {
-            let socket = self.inner.lock().unwrap();
             let mut packet = DtpPacket::uninitialized();
             let mut buf = unsafe { packet.bytes_mut() };
             let (peer_addr, len, ecn) = {
-                match socket.udp.poll_recv(cx, &mut buf) {
+                match self.socket.poll_recv(cx, &mut buf) {
                     Poll::Ready(Ok(res)) => res,
                     Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
                     Poll::Pending => return Poll::Pending,
@@ -91,20 +83,25 @@ impl OuterDtpSocket {
             packet.set_ecn(ecn);
             (channel, packet)
         };
-        let mut socket = self.inner.lock().unwrap();
-        socket.rx_queue(&channel).push_back(payload);
-        if !socket.channels.contains(&channel) {
-            socket.incoming.push_back(channel);
+
+        if let Some(conn_id) = self.connection_id(&channel) {
+            self.connections
+                .lock()
+                .unwrap()
+                .get_mut(conn_id)
+                .unwrap()
+                .push(payload);
+            if !self.channels.lock().unwrap().contains(&channel) {
+                self.incoming.push(channel.clone())
+            }
         }
+
         Poll::Ready(Ok(()))
     }
 
     pub fn poll_incoming(&self, cx: &mut Context) -> Poll<Result<Channel>> {
-        {
-            let mut socket = self.inner.lock().unwrap();
-            if let Some(stream) = socket.incoming.pop_front() {
-                return Poll::Ready(Ok(stream));
-            }
+        if let Some(stream) = self.incoming.pop().ok() {
+            return Poll::Ready(Ok(stream));
         }
         loop {
             match self.poll_recv(cx) {
@@ -112,10 +109,10 @@ impl OuterDtpSocket {
                 Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
                 Poll::Pending => return Poll::Pending,
             }
-            let mut socket = self.inner.lock().unwrap();
-            if let Some(channel) = socket.incoming.pop_front() {
-                if !socket.channels.contains(&channel) {
-                    socket.channels.insert(channel.clone());
+            if let Some(channel) = self.incoming.pop().ok() {
+                let mut channels = self.channels.lock().unwrap();
+                if !channels.contains(&channel) {
+                    channels.insert(channel.clone());
                     return Poll::Ready(Ok(channel));
                 }
             }
@@ -123,9 +120,10 @@ impl OuterDtpSocket {
     }
 
     pub fn poll_channel(&self, cx: &mut Context, channel: &Channel) -> Poll<Result<DtpPacket>> {
-        {
-            let mut socket = self.inner.lock().unwrap();
-            if let Some(packet) = socket.rx_queue(channel).pop_front() {
+        if let Some(conn_id) = self.connection_id(channel) {
+            let conns = self.connections.lock().unwrap();
+            let queue = conns.get(conn_id).unwrap();
+            if let Some(packet) = queue.pop().ok() {
                 return Poll::Ready(Ok(packet));
             }
         }
@@ -135,30 +133,35 @@ impl OuterDtpSocket {
                 Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
                 Poll::Pending => return Poll::Pending,
             }
-            let mut socket = self.inner.lock().unwrap();
-            if let Some(packet) = socket.rx_queue(channel).pop_front() {
-                return Poll::Ready(Ok(packet));
+            if let Some(conn_id) = self.connection_id(channel) {
+                let conns = self.connections.lock().unwrap();
+                let queue = conns.get(conn_id).unwrap();
+                if let Some(packet) = queue.pop().ok() {
+                    return Poll::Ready(Ok(packet));
+                }
             }
         }
     }
 
     pub fn outgoing(&self, peer_addr: SocketAddr, channel_id: u8) -> Result<Channel> {
-        let mut socket = self.inner.lock().unwrap();
         let channel = Channel {
             peer_addr,
             channel_id,
         };
-        if socket.channels.contains(&channel) {
+        let mut channels = self.channels.lock().unwrap();
+        if channels.contains(&channel) {
             return Err(Error::new(ErrorKind::Other, "channel already taken"));
         }
-        socket.channels.insert(channel.clone());
+        channels.insert(channel.clone());
         Ok(channel)
     }
 
+    // lock order: channels, channel_lookup, connections
     pub fn close(&self, channel: &Channel) {
-        let mut socket = self.inner.lock().unwrap();
-        socket.channels.remove(channel);
-        socket.connections.remove(channel);
+        self.channels.lock().unwrap().remove(channel);
+        let conn_id = self.connection_id(channel).unwrap();
+        self.channel_lookup.lock().unwrap().remove(channel);
+        self.connections.lock().unwrap().remove(conn_id);
     }
 
     pub fn poll_send(
@@ -167,10 +170,8 @@ impl OuterDtpSocket {
         channel: &Channel,
         packet: &mut DtpPacket,
     ) -> Poll<Result<()>> {
-        let socket = self.inner.lock().unwrap();
         packet.set_channel(channel.channel_id);
-        socket
-            .udp
+        self.socket
             .poll_send(cx, &channel.peer_addr, packet.ecn(), packet.bytes())
     }
 }

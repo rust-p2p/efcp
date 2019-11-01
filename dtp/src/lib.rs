@@ -15,14 +15,16 @@ mod packet;
 mod platform;
 mod udp;
 
-use crate::dtp::{Channel, OuterDtpSocket};
+use crate::dtp::{Channel, InnerDtpSocket};
 pub use crate::packet::DtpPacket;
 use async_std::io::Result;
 use async_std::stream::Stream;
 use async_std::task::{Context, Poll};
+use async_trait::async_trait;
 use core::future::Future;
 use core::pin::Pin;
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 /// A DTP socket.
 ///
@@ -37,10 +39,11 @@ use std::net::SocketAddr;
 /// # use async_std::prelude::*;
 /// # fn main() -> Result<(), failure::Error> { async_std::task::block_on(async {
 /// #
+/// use channel::Channel;
 /// use dtp::DtpSocket;
 ///
-/// let socket = DtpSocket::bind("127.0.0.1:8001".parse()?).await?;
-/// let mut channel = socket.outgoing("127.0.0.1:8002".parse()?, 0)?;
+/// let socket = DtpSocket::bind("127.0.0.1:0".parse()?).await?;
+/// let mut channel = socket.outgoing("127.0.0.1:8000".parse()?, 0)?;
 /// channel.send("ping".into()).await?;
 /// let response = channel.recv().await?;
 /// #
@@ -50,9 +53,10 @@ use std::net::SocketAddr;
 /// # use async_std::prelude::*;
 /// # fn main() -> Result<(), failure::Error> { async_std::task::block_on(async {
 /// #
+/// use channel::Channel;
 /// use dtp::DtpSocket;
 ///
-/// let socket = DtpSocket::bind("127.0.0.1:8001".parse()?).await?;
+/// let socket = DtpSocket::bind("127.0.0.1:0".parse()?).await?;
 /// let mut incoming = socket.incoming();
 /// while let Some(channel) = incoming.next().await {
 ///     let channel = channel?;
@@ -62,7 +66,7 @@ use std::net::SocketAddr;
 /// # Ok(()) }) }
 /// ```
 pub struct DtpSocket {
-    socket: OuterDtpSocket,
+    socket: Arc<InnerDtpSocket>,
 }
 
 impl DtpSocket {
@@ -79,13 +83,15 @@ impl DtpSocket {
     /// #
     /// use dtp::DtpSocket;
     ///
-    /// let socket = DtpSocket::bind("127.0.0.1:8001".parse()?).await?;
+    /// let socket = DtpSocket::bind("127.0.0.1:0".parse()?).await?;
     /// #
     /// # Ok(()) }) }
     /// ```
     pub async fn bind(addr: SocketAddr) -> Result<Self> {
-        let socket = OuterDtpSocket::bind(addr).await?;
-        Ok(Self { socket })
+        let socket = InnerDtpSocket::bind(addr).await?;
+        Ok(Self {
+            socket: Arc::new(socket),
+        })
     }
 
     /// Returns a stream of incoming connections.
@@ -99,9 +105,10 @@ impl DtpSocket {
     /// # use async_std::prelude::*;
     /// # fn main() -> Result<(), failure::Error> { async_std::task::block_on(async {
     /// #
+    /// use channel::Channel;
     /// use dtp::DtpSocket;
     ///
-    /// let socket = DtpSocket::bind("127.0.0.1:8001".parse()?).await?;
+    /// let socket = DtpSocket::bind("127.0.0.1:0".parse()?).await?;
     /// let mut incoming = socket.incoming();
     /// while let Some(channel) = incoming.next().await {
     ///     let channel = channel?;
@@ -124,10 +131,11 @@ impl DtpSocket {
     /// # use async_std::prelude::*;
     /// # fn main() -> Result<(), failure::Error> { async_std::task::block_on(async {
     /// #
+    /// use channel::Channel;
     /// use dtp::DtpSocket;
     ///
-    /// let socket = DtpSocket::bind("127.0.0.1:8001".parse()?).await?;
-    /// let channel = socket.outgoing("127.0.0.1:8002".parse()?, 0)?;
+    /// let socket = DtpSocket::bind("127.0.0.1:0".parse()?).await?;
+    /// let channel = socket.outgoing("127.0.0.1:8000".parse()?, 0)?;
     /// channel.send("ping".into()).await?;
     /// let response = channel.recv().await?;
     /// #
@@ -149,7 +157,7 @@ impl DtpSocket {
     /// # use dtp::DtpSocket;
     /// # fn main() -> Result<(), failure::Error> { async_std::task::block_on(async {
     /// #
-    /// let socket = DtpSocket::bind("127.0.0.1:8001".parse()?).await?;
+    /// let socket = DtpSocket::bind("127.0.0.1:0".parse()?).await?;
     /// socket.local_addr()?;
     /// #
     /// # Ok(()) }) }
@@ -208,10 +216,11 @@ impl<'a> Stream for Incoming<'a> {
 /// ```no_run
 /// # fn main() -> Result<(), failure::Error> { async_std::task::block_on(async {
 /// #
+/// use channel::Channel;
 /// use dtp::{DtpChannel, DtpSocket};
 ///
-/// let socket = DtpSocket::bind("127.0.0.1:8001".parse()?).await?;
-/// let channel = socket.outgoing("127.0.0.1:8002".parse()?, 0)?;
+/// let socket = DtpSocket::bind("127.0.0.1:0".parse()?).await?;
+/// let channel = socket.outgoing("127.0.0.1:8000".parse()?, 0)?;
 /// channel.send("ping".into()).await?;
 /// let response = channel.recv().await?;
 /// #
@@ -219,7 +228,7 @@ impl<'a> Stream for Incoming<'a> {
 /// ```
 pub struct DtpChannel {
     channel: Channel,
-    socket: OuterDtpSocket,
+    socket: Arc<InnerDtpSocket>,
 }
 
 impl DtpChannel {
@@ -228,11 +237,11 @@ impl DtpChannel {
     /// ## Examples
     ///
     /// ```no_run
-    /// # use dtp::{DtpChannel, DtpSocket};
     /// # fn main() -> Result<(), failure::Error> { async_std::task::block_on(async {
     /// #
-    /// let socket = DtpSocket::bind("127.0.0.1:8001".parse()?).await?;
-    /// let channel = socket.outgoing("127.0.0.1:8002".parse()?, 0)?;
+    /// use dtp::DtpSocket;
+    /// let socket = DtpSocket::bind("127.0.0.1:0".parse()?).await?;
+    /// let channel = socket.outgoing("127.0.0.1:8000".parse()?, 0)?;
     /// channel.local_addr()?;
     /// #
     /// # Ok(()) }) }
@@ -246,11 +255,11 @@ impl DtpChannel {
     /// ## Examples
     ///
     /// ```no_run
-    /// # use dtp::{DtpChannel, DtpSocket};
     /// # fn main() -> Result<(), failure::Error> { async_std::task::block_on(async {
     /// #
-    /// let socket = DtpSocket::bind("127.0.0.1:8001".parse()?).await?;
-    /// let channel = socket.outgoing("127.0.0.1:8002".parse()?, 0)?;
+    /// use dtp::DtpSocket;
+    /// let socket = DtpSocket::bind("127.0.0.1:0".parse()?).await?;
+    /// let channel = socket.outgoing("127.0.0.1:8000".parse()?, 0)?;
     /// channel.peer_addr();
     /// #
     /// # Ok(()) }) }
@@ -267,9 +276,10 @@ impl DtpChannel {
     /// # use async_std::prelude::*;
     /// # fn main() -> Result<(), failure::Error> { async_std::task::block_on(async {
     /// #
+    /// use channel::Channel;
     /// use dtp::DtpSocket;
     ///
-    /// let socket = DtpSocket::bind("127.0.0.1:8001".parse()?).await?;
+    /// let socket = DtpSocket::bind("127.0.0.1:0".parse()?).await?;
     /// let mut incoming = socket.incoming();
     /// while let Some(channel) = incoming.next().await {
     ///     let channel = channel?;
@@ -282,46 +292,6 @@ impl DtpChannel {
     /// ```
     pub fn channel(&self) -> u8 {
         self.channel.channel_id
-    }
-
-    /// Receives data from the channel.
-    /// ## Examples
-    ///
-    /// ```no_run
-    /// # fn main() -> Result<(), failure::Error> { async_std::task::block_on(async {
-    /// #
-    /// use dtp::{DtpChannel, DtpSocket};
-    ///
-    /// let socket = DtpSocket::bind("127.0.0.1:8001".parse()?).await?;
-    /// let channel = socket.outgoing("127.0.0.1:8002".parse()?, 0)?;
-    /// let response = channel.recv().await?;
-    /// #
-    /// # Ok(()) }) }
-    /// ```
-    pub fn recv(&self) -> RecvFuture {
-        RecvFuture(self)
-    }
-
-    /// Sends data on the channel.
-    ///
-    /// ## Examples
-    ///
-    /// ```no_run
-    /// # fn main() -> Result<(), failure::Error> { async_std::task::block_on(async {
-    /// #
-    /// use dtp::{DtpChannel, DtpSocket};
-    ///
-    /// let socket = DtpSocket::bind("127.0.0.1:8001".parse()?).await?;
-    /// let channel = socket.outgoing("127.0.0.1:8002".parse()?, 0)?;
-    /// channel.send("ping".into()).await?;
-    /// #
-    /// # Ok(()) }) }
-    /// ```
-    pub fn send(&self, packet: DtpPacket) -> SendFuture {
-        SendFuture {
-            channel: self,
-            packet,
-        }
     }
 }
 
@@ -358,16 +328,20 @@ impl<'a> Future for SendFuture<'a> {
     }
 }
 
-#[async_trait::async_trait]
+#[async_trait]
 impl channel::Channel for DtpChannel {
     type Packet = DtpPacket;
 
     async fn send(&self, packet: Self::Packet) -> Result<()> {
-        self.send(packet).await
+        SendFuture {
+            channel: self,
+            packet,
+        }
+        .await
     }
 
     async fn recv(&self) -> Result<Self::Packet> {
-        self.recv().await
+        RecvFuture(self).await
     }
 }
 
@@ -465,5 +439,21 @@ mod tests {
     #[test]
     fn test_channel() {
         task::block_on(channel()).unwrap();
+    }
+
+    async fn ipv6() -> Result<(), Error> {
+        let socket1 = DtpSocket::bind("[::1]:0".parse()?).await?;
+        let socket2 = DtpSocket::bind("[::1]:0".parse()?).await?;
+        let ch1 = socket1.outgoing(socket2.local_addr()?, 0)?;
+        let ch2 = socket2.outgoing(socket1.local_addr()?, 0)?;
+        ch1.send("ping".into()).await?;
+        let msg = ch2.recv().await?;
+        assert_eq!(msg.payload(), b"ping");
+        Ok(())
+    }
+
+    #[test]
+    fn test_ipv6() {
+        task::block_on(ipv6()).unwrap();
     }
 }
