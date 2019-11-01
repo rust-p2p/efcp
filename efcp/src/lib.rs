@@ -20,7 +20,7 @@
 //! signature extension spec. The client identity is useful for performing
 //! access control operations.
 //!
-//! ```
+//! ```no_build
 //! XK1sig
 //!   <- s
 //!   ...
