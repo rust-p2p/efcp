@@ -88,9 +88,9 @@ impl DtpSocket {
     /// # Ok(()) }) }
     /// ```
     pub async fn bind<T: ToAddr>(addr: T) -> Result<Self> {
-        let addr = addr.to_addr().map_err(|_| {
-            Error::new(ErrorKind::Other, "failed to parse socket addr")
-        })?;
+        let addr = addr
+            .to_addr()
+            .map_err(|_| Error::new(ErrorKind::Other, "failed to parse socket addr"))?;
         let socket = InnerDtpSocket::bind(addr).await?;
         Ok(Self {
             socket: Arc::new(socket),
@@ -145,9 +145,9 @@ impl DtpSocket {
     /// # Ok(()) }) }
     /// ```
     pub fn outgoing<T: ToAddr>(&self, peer_addr: T, channel: u8) -> Result<DtpChannel> {
-        let peer_addr = peer_addr.to_addr().map_err(|_| {
-            Error::new(ErrorKind::Other, "failed to parse socket addr")
-        })?;
+        let peer_addr = peer_addr
+            .to_addr()
+            .map_err(|_| Error::new(ErrorKind::Other, "failed to parse socket addr"))?;
         let channel = self.socket.outgoing(peer_addr, channel)?;
         Ok(DtpChannel {
             socket: self.socket.clone(),

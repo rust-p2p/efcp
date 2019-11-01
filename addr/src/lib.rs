@@ -68,13 +68,15 @@ impl FromStr for Addr {
                     })
                 }
                 _ => return Err(AddrParseError::UnknownProtocol),
-                    
             }
         }
         if ip.is_none() {
             return Err(AddrParseError::UnknownProtocol);
         }
-        Ok(Self { ip: ip.unwrap(), port: port.unwrap_or(0) })
+        Ok(Self {
+            ip: ip.unwrap(),
+            port: port.unwrap_or(0),
+        })
     }
 }
 
@@ -98,7 +100,10 @@ impl ToAddr for &str {
 
 impl From<SocketAddr> for Addr {
     fn from(addr: SocketAddr) -> Self {
-        Addr { ip: addr.ip(), port: addr.port() }
+        Addr {
+            ip: addr.ip(),
+            port: addr.port(),
+        }
     }
 }
 

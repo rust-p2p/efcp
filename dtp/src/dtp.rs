@@ -171,7 +171,11 @@ impl InnerDtpSocket {
         packet: &mut DtpPacket,
     ) -> Poll<Result<()>> {
         packet.set_channel(channel.channel_id);
-        self.socket
-            .poll_send(cx, &channel.peer_addr.socket_addr(), packet.ecn(), packet.bytes())
+        self.socket.poll_send(
+            cx,
+            &channel.peer_addr.socket_addr(),
+            packet.ecn(),
+            packet.bytes(),
+        )
     }
 }
