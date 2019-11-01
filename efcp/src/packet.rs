@@ -1,15 +1,15 @@
 use crate::negotiation::Message;
+use addr::Addr;
 use std::io::{Error, ErrorKind, Result};
-use std::net::SocketAddr;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HandshakePacket<'a> {
     negotiate: Option<Message<'a>>,
-    external_addr: Option<SocketAddr>,
+    external_addr: Option<Addr>,
 }
 
 impl<'a> HandshakePacket<'a> {
-    pub fn new(negotiate: Option<Message<'static>>, external_addr: Option<SocketAddr>) -> Self {
+    pub fn new(negotiate: Option<Message<'static>>, external_addr: Option<Addr>) -> Self {
         Self {
             negotiate,
             external_addr,
@@ -74,7 +74,7 @@ impl<'a> HandshakePacket<'a> {
         self.negotiate.take()
     }
 
-    pub fn external_addr(&mut self) -> Option<SocketAddr> {
+    pub fn external_addr(&mut self) -> Option<Addr> {
         self.external_addr.take()
     }
 
@@ -95,7 +95,7 @@ impl<'a> HandshakePacket<'a> {
             Some(Message::Accept) => bytes.push(2),
             Some(Message::Fail) => bytes.push(3),
         }
-        match self.external_addr {
+        match &self.external_addr {
             None => {}
             Some(addr) => {
                 let addr = addr.to_string();
@@ -117,7 +117,7 @@ impl<'a> HandshakePacket<'a> {
 mod tests {
     use super::*;
 
-    fn check(msg: Option<Message<'static>>, addr: Option<SocketAddr>) {
+    fn check(msg: Option<Message<'static>>, addr: Option<Addr>) {
         let packet = HandshakePacket::new(msg, addr);
         let bytes = packet.to_bytes().unwrap();
         let p2 = HandshakePacket::from_bytes(&bytes).unwrap();
@@ -126,8 +126,8 @@ mod tests {
 
     #[test]
     fn test_serde() {
-        let addrv4 = "127.0.0.1:0".parse().unwrap();
-        let addrv6 = "[::1]:0".parse().unwrap();
+        let addrv4 = "/ip4/127.0.0.1".parse().unwrap();
+        let addrv6 = "/ip6/::1".parse().unwrap();
         let protocol = "/ping/1.0";
         check(None, None);
         check(Some(Message::Propose(protocol)), None);

@@ -62,6 +62,7 @@ use crate::error::HandshakeError;
 use crate::negotiation::{Negotiation, Protocol, Protocols};
 use crate::packet::HandshakePacket;
 use crate::secure::{DiscoChannel, DiscoPacket};
+use addr::{Addr, ToAddr};
 use async_std::prelude::*;
 use async_trait::async_trait;
 use channel::{BasePacket, Channel};
@@ -70,12 +71,11 @@ use disco::SessionBuilder;
 use dtcp::{DtcpBuilder, DtcpChannel, DtcpPacket};
 use dtp::{DtpChannel, DtpPacket, DtpSocket};
 use std::io::Error;
-use std::net::SocketAddr;
 
 /// The information required to dial a peer.
 pub struct Dial {
     /// Peer's external address.
-    pub peer_addr: SocketAddr,
+    pub peer_addr: Addr,
     /// DTP channel id.
     pub channel: u8,
     /// Peer's public key.
@@ -100,7 +100,7 @@ pub struct Dial {
 ///
 /// let identity = Keypair::generate(&mut OsRng);
 /// let socket = EfcpSocket::bind(
-///     "0.0.0.0:0".parse()?,
+///     "/ip4/0.0.0.0",
 ///     identity,
 ///     &["/ping/1.0"],
 /// ).await?;
@@ -124,12 +124,12 @@ pub struct Dial {
 ///
 /// let identity = Keypair::generate(&mut OsRng);
 /// let socket = EfcpSocket::bind(
-///     "0.0.0.0:0".parse()?,
+///     "/ip4/0.0.0.0",
 ///     identity,
 ///     &["/ping/1.0"],
 /// ).await?;
 /// let dial = Dial {
-///     peer_addr: "127.0.0.1:8000".parse()?,
+///     peer_addr: "/ip4/127.0.0.1/udp/8000".parse()?,
 ///     channel: 0,
 ///     remote_public,
 ///     protocols: &["/ping/1.0"],
@@ -148,8 +148,8 @@ pub struct EfcpSocket {
 
 impl EfcpSocket {
     /// Creates a new `EfcpSocket`.
-    pub async fn bind(
-        addr: SocketAddr,
+    pub async fn bind<T: ToAddr>(
+        addr: T,
         identity: Keypair,
         protocols: Protocols,
     ) -> Result<Self, Error> {
@@ -183,7 +183,7 @@ impl EfcpSocket {
     }
 
     /// Returns the local address that this socket is bound to.
-    pub fn local_addr(&self) -> Result<SocketAddr, Error> {
+    pub fn local_addr(&self) -> Result<Addr, Error> {
         self.dtp.local_addr()
     }
 
@@ -203,7 +203,7 @@ pub struct EfcpChannel {
     channel: DtcpChannel<DiscoChannel<DtpChannel>>,
     remote: PublicKey,
     protocol: Protocol,
-    external_addr: Option<SocketAddr>,
+    external_addr: Option<Addr>,
 }
 
 impl EfcpChannel {
@@ -292,7 +292,7 @@ impl EfcpChannel {
         channel: DtpChannel,
         identity: &Keypair,
         protocols: Protocols,
-        remote_addr: SocketAddr,
+        remote_addr: Addr,
     ) -> Result<Self, HandshakeError> {
         let dtcp = DtcpBuilder::new();
         let channel = dtcp.build_channel(channel);
@@ -363,17 +363,17 @@ impl EfcpChannel {
     }
 
     /// Returns the local address that this bound to.
-    pub fn local_addr(&self) -> Result<SocketAddr, Error> {
+    pub fn local_addr(&self) -> Result<Addr, Error> {
         self.channel.local_addr()
     }
 
     /// Returns the remote address that this channel is connected to.
-    pub fn peer_addr(&self) -> &SocketAddr {
+    pub fn peer_addr(&self) -> &Addr {
         self.channel.peer_addr()
     }
 
     /// Returns the external address that the remote observed.
-    pub fn external_addr(&self) -> Option<&SocketAddr> {
+    pub fn external_addr(&self) -> Option<&Addr> {
         self.external_addr.as_ref()
     }
 
@@ -414,7 +414,7 @@ mod tests {
     use rand::rngs::OsRng;
 
     async fn efcp() -> Result<(), HandshakeError> {
-        let addr = "127.0.0.1:0".parse().unwrap();
+        let addr = "/ip4/127.0.0.1";
         let protocols = &["/ping/1.0"];
 
         let identity1 = Keypair::generate(&mut OsRng);

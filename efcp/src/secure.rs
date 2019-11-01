@@ -123,10 +123,10 @@ mod tests {
         s1.read_message(&m2).unwrap();
         let t1 = s1.into_stateless_transport_mode();
         let t2 = s2.into_stateless_transport_mode();
-        let d1 = DtpSocket::bind("127.0.0.1:0".parse().unwrap())
+        let d1 = DtpSocket::bind("/ip4/127.0.0.1")
             .await
             .unwrap();
-        let d2 = DtpSocket::bind("127.0.0.1:0".parse().unwrap())
+        let d2 = DtpSocket::bind("/ip4/127.0.0.1")
             .await
             .unwrap();
         let c1 = d1.outgoing(d2.local_addr().unwrap(), 0).unwrap();

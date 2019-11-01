@@ -5,6 +5,7 @@ authors = ["David Craven <david@craven.ch>"]
 edition = "2018"
 
 [dependencies]
+addr = { path = "../addr" }
 async-std = "0.99"
 async-trait = "0.1"
 byteorder = "1.3"

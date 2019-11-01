@@ -225,10 +225,10 @@ mod tests {
 
     fn setup_dtp(dtcp: DtcpBuilder) -> (DtcpChannel<DtpChannel>, DtcpChannel<DtpChannel>) {
         task::block_on(async {
-            let s1 = DtpSocket::bind("127.0.0.1:0".parse().unwrap())
+            let s1 = DtpSocket::bind("/ip4/127.0.0.1")
                 .await
                 .unwrap();
-            let s2 = DtpSocket::bind("127.0.0.1:0".parse().unwrap())
+            let s2 = DtpSocket::bind("/ip4/127.0.0.1")
                 .await
                 .unwrap();
             let a = dtcp.build_channel(s1.outgoing(s2.local_addr().unwrap(), 0).unwrap());

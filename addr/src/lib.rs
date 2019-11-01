@@ -6,7 +6,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
 
 /// Address of a socket.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct Addr {
     ip: IpAddr,
     port: u16,
